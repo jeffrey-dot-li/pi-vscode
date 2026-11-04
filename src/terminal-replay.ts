@@ -4,6 +4,8 @@ import { terminalLineLinks, type TerminalLineLink } from "./terminal-links";
 
 const Terminal = loadHeadlessTerminal();
 
+const MOUSE_ENCODING_MODES = new Set([1005, 1006, 1015, 1016]);
+
 export interface TerminalReplaySnapshot {
 	data: string;
 	sequence: number;
@@ -22,6 +24,8 @@ export class TerminalReplay {
 	private sequence = 0;
 	private controlTail = "";
 	private kittyKeyboardSequence = "";
+	/** DECSET mouse encodings (1005 UTF-8, 1006 SGR, 1015 urxvt, 1016 SGR-pixels) currently enabled. */
+	private readonly mouseEncodingModes = new Set<number>();
 	private disposed = false;
 
 	constructor(
@@ -72,7 +76,7 @@ export class TerminalReplay {
 			await writeChain;
 			if (this.disposed) return { data: "", sequence: this.sequence };
 			if (sequence !== this.sequence || writeChain !== this.writeChain) continue;
-			return { data: this.kittyKeyboardSequence + this.serializer.serialize(), sequence };
+			return { data: this.kittyKeyboardSequence + this.serializer.serialize() + this.mouseEncodingSequence(), sequence };
 		}
 	}
 
@@ -131,12 +135,37 @@ export class TerminalReplay {
 
 	private trackInputProtocol(data: string): void {
 		const input = this.controlTail + data;
+		// Only scan the new data plus the retained tail once: matches entirely inside the
+		// tail were already applied, and re-applying a stale toggle would be wrong.
+		const freshFrom = this.controlTail.length;
 		for (const match of input.matchAll(/\x1b\[(?:>|<)[0-9:;]*u/g)) {
+			if ((match.index ?? 0) + match[0].length <= freshFrom) continue;
 			this.kittyKeyboardSequence = match[0][2] === ">" ? match[0] : "";
 		}
-		// A Kitty sequence is short; retaining a small suffix also catches a sequence
-		// split across adjacent node-pty data callbacks.
+		// addon-serialize restores the mouse *tracking* mode (?1000/?1002/?1003) but not
+		// the mouse *encoding*. Pi's fullscreen TUI enables SGR encoding (?1006h); without
+		// it a reconstructed terminal reports wheel events in the legacy X10 format, which
+		// Pi ignores, so scrolling appears frozen until Pi re-sends its modes.
+		for (const match of input.matchAll(/\x1b\[\?([0-9;]+)([hl])|\x1bc/g)) {
+			if ((match.index ?? 0) + match[0].length <= freshFrom) continue;
+			if (match[0] === "\x1bc") {
+				this.mouseEncodingModes.clear();
+				continue;
+			}
+			for (const param of match[1]!.split(";")) {
+				const mode = Number(param);
+				if (!MOUSE_ENCODING_MODES.has(mode)) continue;
+				if (match[2] === "h") this.mouseEncodingModes.add(mode);
+				else this.mouseEncodingModes.delete(mode);
+			}
+		}
+		// Control sequences are short; retaining a small suffix also catches one split
+		// across adjacent node-pty data callbacks.
 		this.controlTail = input.slice(-64);
+	}
+
+	private mouseEncodingSequence(): string {
+		return [...this.mouseEncodingModes].sort((a, b) => a - b).map((mode) => `\x1b[?${mode}h`).join("");
 	}
 
 	private hardWrappedLinksFrom(startLineIndex: number): Array<{

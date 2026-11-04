@@ -41,6 +41,24 @@ test("replays Kitty keyboard mode that addon-serialize does not preserve", async
 	replay.dispose();
 });
 
+test("replays the SGR mouse encoding that addon-serialize does not preserve", async () => {
+	const replay = new TerminalReplay();
+	// Pi's fullscreen TUI: alt screen plus button/drag tracking, focus and SGR encoding,
+	// with the sequence split across two PTY data callbacks.
+	replay.write("\x1b[?1049h\x1b[?1000h\x1b[?1002h\x1b[?10");
+	replay.write("04h\x1b[?1006htranscript");
+	const enabled = (await replay.snapshot()).data;
+	assert.ok(enabled.includes("\x1b[?1002h"), "tracking mode is replayed");
+	assert.ok(enabled.endsWith("\x1b[?1006h"), "SGR encoding is replayed after the tracking mode");
+
+	replay.write("\x1b[?1000l\x1b[?1002l\x1b[?1006l\x1b[?1049l");
+	assert.ok(!(await replay.snapshot()).data.includes("\x1b[?1006h"), "disabling SGR encoding is honoured");
+
+	replay.write("\x1b[?1002;1006h");
+	assert.ok((await replay.snapshot()).data.endsWith("\x1b[?1006h"), "combined DECSET parameters are tracked");
+	replay.dispose();
+});
+
 test("maps every hard-wrapped path fragment back to the complete native terminal link", async () => {
 	const replay = new TerminalReplay(24, 5, 10);
 	const target = "/workspace/docs/architecture/native-terminal.md";
