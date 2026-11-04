@@ -159,6 +159,8 @@ export function activate(context: vscode.ExtensionContext): void {
 		vscode.commands.registerCommand("piAgent.newSession", () => provider.newSession()),
 		vscode.commands.registerCommand("piAgent.toggleTerminal", () => provider.toggleTerminal()),
 		vscode.commands.registerCommand("piAgent.searchSessions", () => provider.searchSessions()),
+		vscode.commands.registerCommand("piAgent.nextSession", () => provider.cycleSession(1)),
+		vscode.commands.registerCommand("piAgent.previousSession", () => provider.cycleSession(-1)),
 		vscode.commands.registerCommand(PI_CLOSE_SESSION_OR_VIEW_COMMAND, () => provider.closeSessionOrView()),
 		vscode.commands.registerCommand("piAgent.copyTerminalSelection", () => provider.copyTerminalSelection()),
 	);
@@ -200,6 +202,15 @@ class PiViewProvider implements vscode.WebviewViewProvider, vscode.Disposable {
 
 	closeSessionOrView(): void {
 		this.manager?.closeActiveSessionOrView();
+	}
+
+	/** Show the next (1) or previous (-1) open session, like ⌘⇧] / ⌘⇧[ between editors. */
+	async cycleSession(step: 1 | -1): Promise<void> {
+		if (!this.manager) {
+			await this.open();
+			return;
+		}
+		this.manager.cycleSession(step);
 	}
 
 	/** Reveal the session list on its All sessions page with the search box focused. */
@@ -1569,6 +1580,48 @@ class PiSessionManager implements vscode.Disposable {
 		void this.view.webview.postMessage(message);
 	}
 
+	/**
+	 * The open sessions in the order the sidebar lists them: pinned first, then the
+	 * rest, each by last prompt (ties: creation time, then id).
+	 */
+	private openedSessionOrder(): string[] {
+		const sortKey = (id: string) => {
+			const saved = this.history.get(id);
+			const running = this.openSessionFor(id);
+			const updated = saved?.lastPromptAtMs ?? running?.startedAtMs ?? 0;
+			const created = saved?.createdAtMs ?? running?.startedAtMs ?? 0;
+			return { updated, created };
+		};
+		return [...this.viewState.openSessions]
+			.sort((a, b) => {
+				if (Boolean(a.pinned) !== Boolean(b.pinned)) return a.pinned ? -1 : 1;
+				const left = sortKey(a.id);
+				const right = sortKey(b.id);
+				return right.updated - left.updated || right.created - left.created || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0);
+			})
+			.map((record) => record.id);
+	}
+
+	/** Show the next or previous open session, wrapping; one that is not running starts. */
+	cycleSession(step: 1 | -1): void {
+		const order = this.openedSessionOrder();
+		if (!order.length) return;
+		const current = this.presentedSession?.sessionId ?? this.viewState.focusedSessionId;
+		const index = current ? order.indexOf(current) : -1;
+		const next = index < 0 ? (step > 0 ? 0 : order.length - 1) : (index + step + order.length) % order.length;
+		const id = order[next];
+		if (!id || (id === current && this.presentedSession)) return;
+		const running = this.openSessionFor(id);
+		if (running) {
+			this.openPresentation(running, false);
+			return;
+		}
+		const saved = this.history.get(id);
+		const record = this.viewState.openSessions.find((entry) => entry.id === id);
+		const path = saved?.path ?? record?.path;
+		if (path) this.startSession(id, path);
+	}
+
 	/** Switch the webview between its Open sessions and All sessions pages. */
 	showPage(page: "open" | "all"): void {
 		this.pendingPage = page;
@@ -1641,6 +1694,9 @@ class PiSessionManager implements vscode.Disposable {
 	}
 
 	private postActiveSession(tabId: string | undefined): void {
+		// Keybindings (⌘⇧[ / ⌘⇧]) target Pi sessions only while its terminal is the active one.
+		const active = Boolean(this.terminal) && vscode.window.activeTerminal === this.terminal;
+		void vscode.commands.executeCommand("setContext", "piAgent.sessionTerminalActive", active);
 		this.post({ type: "active-session", ...(tabId ? { tabId } : {}) });
 	}
 }

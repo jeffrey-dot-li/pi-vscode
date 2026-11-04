@@ -56,6 +56,14 @@
         "icon": "$(search)"
       },
       {
+        "command": "piAgent.nextSession",
+        "title": "Pi: Next Session"
+      },
+      {
+        "command": "piAgent.previousSession",
+        "title": "Pi: Previous Session"
+      },
+      {
         "command": "piAgent.closeSessionOrView",
         "title": "Pi: Close Active Session or View"
       }
@@ -73,6 +81,18 @@
         "key": "ctrl+shift+c",
         "mac": "cmd+c",
         "when": "terminalFocus && terminalTextSelectedInFocused"
+      },
+      {
+        "command": "piAgent.nextSession",
+        "key": "ctrl+shift+]",
+        "mac": "cmd+shift+]",
+        "when": "(terminalFocus && piAgent.sessionTerminalActive) || focusedView == piAgent.view"
+      },
+      {
+        "command": "piAgent.previousSession",
+        "key": "ctrl+shift+[",
+        "mac": "cmd+shift+[",
+        "when": "(terminalFocus && piAgent.sessionTerminalActive) || focusedView == piAgent.view"
       }
     ],
     "configurationDefaults": {
@@ -80,7 +100,9 @@
         "piAgent.copyTerminalSelection",
         "piAgent.toggleTerminal",
         "piAgent.newSession",
-        "piAgent.searchSessions"
+        "piAgent.searchSessions",
+        "piAgent.nextSession",
+        "piAgent.previousSession"
       ]
     },
     "configuration": {
