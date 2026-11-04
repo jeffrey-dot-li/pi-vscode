@@ -46,6 +46,11 @@
         "icon": "$(add)"
       },
       {
+        "command": "piAgent.toggleTerminal",
+        "title": "Pi: Toggle Session Terminal",
+        "icon": "$(layout-sidebar-right)"
+      },
+      {
         "command": "piAgent.closeSessionOrView",
         "title": "Pi: Close Active Session or View"
       }
@@ -67,7 +72,9 @@
     ],
     "configurationDefaults": {
       "terminal.integrated.commandsToSkipShell": [
-        "piAgent.copyTerminalSelection"
+        "piAgent.copyTerminalSelection",
+        "piAgent.toggleTerminal",
+        "piAgent.newSession"
       ]
     },
     "configuration": {

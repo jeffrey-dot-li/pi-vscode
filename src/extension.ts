@@ -22,6 +22,7 @@ import {
 	deleteSessionFiles,
 	listWorkspaceSessions,
 	NEW_SESSION_TITLE,
+	compareSessions,
 	samePath,
 	sessionDirectoriesForWorkspace,
 	type PiSession,
@@ -150,6 +151,7 @@ export function activate(context: vscode.ExtensionContext): void {
 		}),
 		vscode.commands.registerCommand("piAgent.open", () => provider.open()),
 		vscode.commands.registerCommand("piAgent.newSession", () => provider.newSession()),
+		vscode.commands.registerCommand("piAgent.toggleTerminal", () => provider.toggleTerminal()),
 		vscode.commands.registerCommand(PI_CLOSE_SESSION_OR_VIEW_COMMAND, () => provider.closeSessionOrView()),
 		vscode.commands.registerCommand("piAgent.copyTerminalSelection", () => provider.copyTerminalSelection()),
 	);
@@ -191,6 +193,16 @@ class PiViewProvider implements vscode.WebviewViewProvider, vscode.Disposable {
 
 	closeSessionOrView(): void {
 		this.manager?.closeActiveSessionOrView();
+	}
+
+	/** Show or hide the session terminal editor, like toggling the bottom terminal panel. */
+	async toggleTerminal(): Promise<void> {
+		if (!this.manager) {
+			// Opening the view restores (and presents) the sessions that were open.
+			await this.open();
+			return;
+		}
+		await this.manager.toggleTerminal();
 	}
 
 	async copyTerminalSelection(): Promise<void> {
@@ -1511,6 +1523,33 @@ class PiSessionManager implements vscode.Disposable {
 
 	closeActiveSessionOrView(): void {
 		void vscode.commands.executeCommand("workbench.action.closeAuxiliaryBar");
+	}
+
+	/**
+	 * Hide the session terminal editor if it is showing; otherwise show the last focused
+	 * running session, else resume the most recent session, else start a new one.
+	 * Hiding leaves Pi running and keeps the session in the set restored after a reload.
+	 */
+	async toggleTerminal(): Promise<void> {
+		const shown = this.presentedSession;
+		if (shown && this.terminal) {
+			this.closePresentation(shown);
+			this.postHistory();
+			this.postActiveSession(undefined);
+			return;
+		}
+		const running = [...this.sessions.values()];
+		const target =
+			running.find((session) => session.sessionId === this.viewState.focusedSessionId) ??
+			running.sort((a, b) => b.startedAtMs - a.startedAtMs)[0];
+		if (target) {
+			this.openPresentation(target, false);
+			return;
+		}
+		const archived = new Set(this.viewState.archivedSessionIds);
+		const recent = [...this.history.values()].filter((session) => !archived.has(session.id)).sort(compareSessions)[0];
+		if (recent) this.startSession(recent.id, recent.path);
+		else await this.startNewSession();
 	}
 
 	async copyTerminalSelection(): Promise<void> {
