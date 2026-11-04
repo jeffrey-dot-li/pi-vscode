@@ -37,9 +37,36 @@ test("replays Kitty keyboard mode that addon-serialize does not preserve", async
 	replay.write("\x1b[>7");
 	replay.write("uhello");
 	const snapshot = await replay.snapshot();
-	assert.ok(snapshot.data.startsWith("\x1b[>7u"));
+	assert.ok(snapshot.data.includes("\x1b[>7u"));
+	const restored = kittyTerminal();
+	await write(restored, snapshot.data);
+	assert.equal(kittyFlags(restored), 7);
 	replay.dispose();
 });
+
+for (const [order, output] of [
+	["pushed before entering the alternate screen", "\x1b[>7u\x1b[?1049hfullscreen"],
+	["pushed on the alternate screen", "\x1b[?1049h\x1b[>7ufullscreen"],
+] as const) {
+	test(`replays Kitty keyboard flags on the screen they were ${order}`, async () => {
+		// xterm keeps separate flags for the normal and alternate screens. Pi's fullscreen
+		// TUI reads plain ESC CR as Shift+Enter once Kitty is negotiated, so replaying the
+		// push onto the wrong screen turned Option+Enter into a newline.
+		const replay = new TerminalReplay(20, 4, 10);
+		replay.write(output);
+		const live = kittyTerminal();
+		await write(live, output);
+
+		const restored = kittyTerminal();
+		await write(restored, (await replay.snapshot()).data);
+		assert.equal(restored.buffer.active.type, "alternate");
+		assert.equal(kittyFlags(restored), kittyFlags(live));
+		await write(live, "\x1b[?1049l");
+		await write(restored, "\x1b[?1049l");
+		assert.equal(kittyFlags(restored), kittyFlags(live));
+		replay.dispose();
+	});
+}
 
 test("replays the SGR mouse encoding that addon-serialize does not preserve", async () => {
 	const replay = new TerminalReplay();
@@ -77,4 +104,14 @@ test("maps every hard-wrapped path fragment back to the complete native terminal
 
 function write(terminal: Terminal, data: string): Promise<void> {
 	return new Promise((resolve) => terminal.write(data, resolve));
+}
+
+function kittyTerminal(): Terminal {
+	return new Terminal({ cols: 20, rows: 4, scrollback: 10, allowProposedApi: true, vtExtensions: { kittyKeyboard: true } });
+}
+
+/** Active Kitty keyboard flags; xterm exposes them only on its core service. */
+function kittyFlags(terminal: Terminal): number {
+	return (terminal as unknown as { _core: { coreService: { kittyKeyboard: { flags: number } } } })._core.coreService
+		.kittyKeyboard.flags;
 }

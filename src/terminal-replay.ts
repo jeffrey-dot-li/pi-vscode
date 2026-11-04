@@ -5,6 +5,7 @@ import { terminalLineLinks, type TerminalLineLink } from "./terminal-links";
 const Terminal = loadHeadlessTerminal();
 
 const MOUSE_ENCODING_MODES = new Set([1005, 1006, 1015, 1016]);
+const ALTERNATE_SCREEN_MODES = new Set([47, 1047, 1049]);
 
 export interface TerminalReplaySnapshot {
 	data: string;
@@ -23,7 +24,13 @@ export class TerminalReplay {
 	private writeChain = Promise.resolve();
 	private sequence = 0;
 	private controlTail = "";
-	private kittyKeyboardSequence = "";
+	/**
+	 * Last kitty keyboard push per screen. xterm keeps separate flags for the normal
+	 * and alternate buffers, so a push made while Pi's fullscreen TUI is on the
+	 * alternate screen must be replayed after the serialized switch to that screen.
+	 */
+	private readonly kittyKeyboardSequence = { normal: "", alternate: "" };
+	private alternateScreen = false;
 	/** DECSET mouse encodings (1005 UTF-8, 1006 SGR, 1015 urxvt, 1016 SGR-pixels) currently enabled. */
 	private readonly mouseEncodingModes = new Set<number>();
 	private disposed = false;
@@ -76,7 +83,13 @@ export class TerminalReplay {
 			await writeChain;
 			if (this.disposed) return { data: "", sequence: this.sequence };
 			if (sequence !== this.sequence || writeChain !== this.writeChain) continue;
-			return { data: this.kittyKeyboardSequence + this.serializer.serialize() + this.mouseEncodingSequence(), sequence };
+			// The serialized output ends on the active buffer; the normal buffer's flags go
+			// first (still on the normal screen), the alternate one's after the switch.
+			const { normal, alternate } = this.kittyKeyboardSequence;
+			const data = this.alternateScreen
+				? normal + this.serializer.serialize() + alternate
+				: this.serializer.serialize() + normal;
+			return { data: data + this.mouseEncodingSequence(), sequence };
 		}
 	}
 
@@ -138,9 +151,21 @@ export class TerminalReplay {
 		// Only scan the new data plus the retained tail once: matches entirely inside the
 		// tail were already applied, and re-applying a stale toggle would be wrong.
 		const freshFrom = this.controlTail.length;
-		for (const match of input.matchAll(/\x1b\[(?:>|<)[0-9:;]*u/g)) {
+		// Kitty pushes/pops and alternate-screen switches, in stream order.
+		for (const match of input.matchAll(/\x1b\[(?:>|<)[0-9:;]*u|\x1b\[\?([0-9;]+)([hl])|\x1bc/g)) {
 			if ((match.index ?? 0) + match[0].length <= freshFrom) continue;
-			this.kittyKeyboardSequence = match[0][2] === ">" ? match[0] : "";
+			if (match[0] === "\x1bc") {
+				this.kittyKeyboardSequence.normal = "";
+				this.kittyKeyboardSequence.alternate = "";
+				this.alternateScreen = false;
+			} else if (match[1] !== undefined) {
+				if (match[1].split(";").some((mode) => ALTERNATE_SCREEN_MODES.has(Number(mode)))) {
+					this.alternateScreen = match[2] === "h";
+				}
+			} else {
+				this.kittyKeyboardSequence[this.alternateScreen ? "alternate" : "normal"] =
+					match[0][2] === ">" ? match[0] : "";
+			}
 		}
 		// addon-serialize restores the mouse *tracking* mode (?1000/?1002/?1003) but not
 		// the mouse *encoding*. Pi's fullscreen TUI enables SGR encoding (?1006h); without
