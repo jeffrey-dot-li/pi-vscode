@@ -36,6 +36,7 @@ import {
 	type PiStatusReport,
 } from "./status-bridge";
 import { piCommandArgs, piTuiModeArgs, win32Spawn } from "./pi-command";
+import { formatSelectionReference } from "./selection-reference";
 import { PiPseudoterminal } from "./native-terminal";
 import { httpUrl, resolveFileLink } from "./terminal-links";
 import { TerminalReplay } from "./terminal-replay";
@@ -159,6 +160,7 @@ export function activate(context: vscode.ExtensionContext): void {
 		vscode.commands.registerCommand("piAgent.newSession", () => provider.newSession()),
 		vscode.commands.registerCommand("piAgent.toggleTerminal", () => provider.toggleTerminal()),
 		vscode.commands.registerCommand("piAgent.searchSessions", () => provider.searchSessions()),
+		vscode.commands.registerCommand("piAgent.addSelectionToPrompt", () => provider.addSelectionToPrompt()),
 		vscode.commands.registerCommand("piAgent.nextSession", () => provider.cycleSession(1)),
 		vscode.commands.registerCommand("piAgent.previousSession", () => provider.cycleSession(-1)),
 		vscode.commands.registerCommand(PI_CLOSE_SESSION_OR_VIEW_COMMAND, () => provider.closeSessionOrView()),
@@ -211,6 +213,25 @@ class PiViewProvider implements vscode.WebviewViewProvider, vscode.Disposable {
 			return;
 		}
 		this.manager.cycleSession(step);
+	}
+
+	/**
+	 * Insert a text reference to the active editor's selections (absolute path plus
+	 * one-based lines/columns) into the shown Pi session's prompt and focus it, like
+	 * Cursor's Cmd+I. Nothing is submitted.
+	 */
+	async addSelectionToPrompt(): Promise<void> {
+		const editor = vscode.window.activeTextEditor;
+		if (!editor) return;
+		const document = editor.document;
+		if (document.isUntitled || document.uri.scheme === "untitled") {
+			void vscode.window.showInformationMessage("Save the file first so Pi can reference it by path.");
+			return;
+		}
+		const path = document.uri.scheme === "file" ? document.uri.fsPath : document.uri.toString();
+		const reference = formatSelectionReference(path, editor.selections, (line) => document.lineAt(line).text.length);
+		if (!this.manager) await this.open();
+		await this.manager?.insertIntoPrompt(`${reference} `);
 	}
 
 	/** Reveal the session list on its All sessions page with the search box focused. */
@@ -1673,6 +1694,39 @@ class PiSessionManager implements vscode.Disposable {
 			candidates[0];
 		if (recent) this.startSession(recent.id, recent.path);
 		else await this.startNewSession();
+	}
+
+	/**
+	 * Paste text into the Pi prompt of the shown session, showing (or resuming) one
+	 * as Toggle Terminal would when none is shown, then focus its terminal.
+	 */
+	async insertIntoPrompt(text: string): Promise<void> {
+		let session = this.presentedSession;
+		if (!session) {
+			await this.toggleTerminal();
+			session = this.presentedSession;
+		}
+		if (!session) return;
+		this.openPresentation(session, false);
+		if (!(await this.waitUntilReady(session.tabId))) {
+			void vscode.window.showWarningMessage("Pi did not become ready; the selection reference was not inserted.");
+			return;
+		}
+		if (!this.sessions.has(session.tabId)) return;
+		// Bracketed paste so Pi inserts the text literally, without submitting.
+		session.process.write(`\x1b[200~${text}\x1b[201~`);
+	}
+
+	private async waitUntilReady(tabId: string): Promise<boolean> {
+		const deadline = Date.now() + PANEL_READY_TIMEOUT_MS;
+		for (;;) {
+			if (this.disposed || !this.sessions.has(tabId)) return false;
+			const current = this.tabStates.get(tabId);
+			if (current && (current.state === "idle" || current.state === "working")) return true;
+			const remaining = deadline - Date.now();
+			if (remaining <= 0) return false;
+			await Promise.race([this.waitForTabChange(tabId), sleep(Math.min(remaining, 500))]);
+		}
 	}
 
 	async copyTerminalSelection(): Promise<void> {

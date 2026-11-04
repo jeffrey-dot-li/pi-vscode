@@ -66,6 +66,10 @@
       {
         "command": "piAgent.closeSessionOrView",
         "title": "Pi: Close Active Session or View"
+      },
+      {
+        "command": "piAgent.addSelectionToPrompt",
+        "title": "Pi: Add Selection to Prompt"
       }
     ],
     "keybindings": [
@@ -93,6 +97,12 @@
         "key": "ctrl+shift+[",
         "mac": "cmd+shift+[",
         "when": "(terminalFocus && piAgent.sessionTerminalActive) || focusedView == piAgent.view"
+      },
+      {
+        "command": "piAgent.addSelectionToPrompt",
+        "key": "ctrl+i",
+        "mac": "cmd+i",
+        "when": "editorTextFocus"
       }
     ],
     "configurationDefaults": {
@@ -175,13 +185,19 @@
           "command": "piAgent.open",
           "group": "navigation@1"
         }
+      ],
+      "editor/context": [
+        {
+          "command": "piAgent.addSelectionToPrompt",
+          "group": "pi@1"
+        }
       ]
     }
   },
   "scripts": {
     "compile": "tsc -p .",
     "vscode:prepublish": "npm run compile",
-    "test": "npm run compile && node --test out/test/pi-command.test.js out/test/session-actions.test.js out/test/session-store.test.js out/test/session-view.test.js out/test/status-bridge.test.js out/test/terminal-links.test.js out/test/terminal-replay.test.js out/test/native-terminal-copy.test.js out/test/view-state.test.js out/test/node-pty-binary.test.js",
+    "test": "npm run compile && node --test out/test/pi-command.test.js out/test/session-actions.test.js out/test/session-store.test.js out/test/session-view.test.js out/test/status-bridge.test.js out/test/terminal-links.test.js out/test/terminal-replay.test.js out/test/native-terminal-copy.test.js out/test/view-state.test.js out/test/selection-reference.test.js out/test/node-pty-binary.test.js",
     "package": "npm version patch --no-git-tag-version --ignore-scripts && npx --yes @vscode/vsce package"
   },
   "dependencies": {
