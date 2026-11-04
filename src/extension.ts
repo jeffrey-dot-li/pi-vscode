@@ -1360,13 +1360,13 @@ class PiSessionManager implements vscode.Disposable {
 
 	private postHistory(): void {
 		const archived = new Set(this.viewState.archivedSessionIds);
-		const sessions = [...this.history.values()].map(({ id, title, createdAtMs, mtimeMs }) => {
+		const sessions = [...this.history.values()].map(({ id, title, createdAtMs, lastPromptAtMs }) => {
 			const openSession = this.openSessionFor(id);
 			return {
 				id,
 				title,
 				createdAtMs,
-				updatedAtMs: mtimeMs,
+				updatedAtMs: lastPromptAtMs,
 				archived: archived.has(id),
 				tabId: openSession?.tabId,
 				attached: openSession?.attached === true,
@@ -1386,7 +1386,9 @@ class PiSessionManager implements vscode.Disposable {
 				state: this.sessionStates.get(session.sessionId) ?? "starting",
 			});
 		}
-		sessions.sort((a, b) => b.updatedAtMs - a.updatedAtMs);
+		sessions.sort(
+			(a, b) => b.updatedAtMs - a.updatedAtMs || b.createdAtMs - a.createdAtMs || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0),
+		);
 		this.post({ type: "history", sessions });
 	}
 

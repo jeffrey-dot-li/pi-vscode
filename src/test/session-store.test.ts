@@ -41,6 +41,38 @@ test("lists only this workspace's sessions, newest first", async (t) => {
 	assert.equal(sessions[0].createdAtMs, Date.parse(newCreatedAt));
 });
 
+test("orders by the last user prompt, not file mtime, with stable ties", async (t) => {
+	const root = await mkdtemp(join(tmpdir(), "pi-vscode-"));
+	t.after(() => rm(root, { recursive: true, force: true }));
+
+	const workspace = join(root, "project");
+	const agentDir = join(root, "agent");
+	const sessionsDir = join(agentDir, "sessions", encodeWorkspaceDirectory(workspace));
+	await mkdir(sessionsDir, { recursive: true });
+
+	const prompt = (text: string, timestamp: string) =>
+		`${JSON.stringify({ type: "message", timestamp, message: { role: "user", content: [{ type: "text", text }] } })}\n`;
+	const created = "2026-06-01T00:00:00.000Z";
+	await writeFile(join(sessionsDir, "a.jsonl"), sessionHeader("a", workspace, created) + prompt("a", "2026-06-02T00:00:00.000Z"));
+	await writeFile(
+		join(sessionsDir, "b.jsonl"),
+		sessionHeader("b", workspace, created) + prompt("b1", "2026-06-01T01:00:00.000Z") + prompt("b2", "2026-06-05T00:00:00.000Z"),
+	);
+	await writeFile(join(sessionsDir, "c.jsonl"), sessionHeader("c", workspace, created));
+	await writeFile(join(sessionsDir, "d.jsonl"), sessionHeader("d", workspace, created));
+	// Bulk-copied transcripts: every file has the same mtime.
+	const same = Date.parse("2026-09-19T16:00:00.000Z") / 1000;
+	for (const name of ["a", "b", "c", "d"]) await utimes(join(sessionsDir, `${name}.jsonl`), same, same);
+
+	const sessions = await listWorkspaceSessions(workspace, { agentDir, env: {} });
+	assert.deepEqual(
+		sessions.map((session) => session.id),
+		["b", "a", "c", "d"],
+	);
+	assert.equal(sessions[0].lastPromptAtMs, Date.parse("2026-06-05T00:00:00.000Z"));
+	assert.equal(sessions[2].lastPromptAtMs, Date.parse(created));
+});
+
 
 test("derives titles from first eligible user messages", async (t) => {
 	const root = await mkdtemp(join(tmpdir(), "pi-vscode-"));

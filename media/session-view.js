@@ -9,13 +9,24 @@
 	const ARCHIVE_GROUP = "Archive";
 	const RECENCY_GROUPS = ["Today", "Yesterday", "Last 7 Days", "Last 30 Days", "Older"];
 
-	// Pi writes to a session file for as long as it stays open, so the file mtime is a
-	// better "last used" signal than the header timestamp the session was created with.
+	// The host sends updatedAtMs as the time of the user's last prompt (not the file
+	// mtime, which moves on every streamed write and made the list reshuffle constantly).
 	function sessionTimestamp(session) {
 		const updated = session && session.updatedAtMs;
 		if (typeof updated === "number" && Number.isFinite(updated)) return updated;
 		const created = session && session.createdAtMs;
 		return typeof created === "number" && Number.isFinite(created) ? created : 0;
+	}
+
+	// Stable order: last prompt, then creation time, then id, so equal timestamps never swap.
+	function compareSessions(a, b) {
+		const created = (session) => (session && Number.isFinite(session.createdAtMs) ? session.createdAtMs : 0);
+		const id = (session) => String((session && session.id) || "");
+		return (
+			sessionTimestamp(b) - sessionTimestamp(a) ||
+			created(b) - created(a) ||
+			(id(a) < id(b) ? -1 : id(a) > id(b) ? 1 : 0)
+		);
 	}
 
 	function formatAge(timestampMs, nowMs) {
@@ -60,7 +71,7 @@
 		const ordered = (sessions || [])
 			.filter((session) => matchesQuery(session, settings.query))
 			.slice()
-			.sort((a, b) => sessionTimestamp(b) - sessionTimestamp(a));
+			.sort(compareSessions);
 
 		const buckets = new Map();
 		for (const session of ordered) {
@@ -75,5 +86,5 @@
 			.map((title) => ({ title, sessions: buckets.get(title) }));
 	}
 
-	return { ARCHIVE_GROUP, formatAge, groupSessions, matchesQuery, recencyGroup, sessionActionAvailable, sessionTimestamp };
+	return { ARCHIVE_GROUP, compareSessions, formatAge, groupSessions, matchesQuery, recencyGroup, sessionActionAvailable, sessionTimestamp };
 });

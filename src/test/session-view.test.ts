@@ -38,7 +38,7 @@ test("formats the age of a session as a distance from now", () => {
 	assert.equal(sessionView.formatAge(Number.NaN, now), "");
 });
 
-test("prefers the last write time over the creation time", () => {
+test("prefers the last prompt time over the creation time", () => {
 	assert.equal(sessionView.sessionTimestamp({ id: "a", title: "a", createdAtMs: 10, updatedAtMs: 50 }), 50);
 	assert.equal(sessionView.sessionTimestamp({ id: "a", title: "a", createdAtMs: 10 }), 10);
 });
@@ -98,6 +98,22 @@ test("enables Fork and Rewind only after a session stops working", () => {
 	assert.equal(sessionView.sessionActionAvailable({ ...summary, state: "working" }), false);
 	assert.equal(sessionView.sessionActionAvailable({ ...summary, state: "idle" }), true);
 	assert.equal(sessionView.sessionActionAvailable({ ...summary, state: "inactive" }), true);
+});
+
+test("orders sessions with identical timestamps deterministically", () => {
+	// Bulk-copied transcripts share one mtime; the host scans them concurrently, so they
+	// arrive in a different order on every refresh. The list must not reshuffle.
+	const now = new Date(2026, 10, 3, 12).getTime();
+	const same = new Date(2026, 8, 19, 16).getTime();
+	const sessions: SessionSummary[] = [
+		{ id: "c", title: "c", createdAtMs: same - 2 * DAY, updatedAtMs: same },
+		{ id: "a", title: "a", createdAtMs: same - 3 * DAY, updatedAtMs: same },
+		{ id: "b", title: "b", createdAtMs: same - 3 * DAY, updatedAtMs: same },
+	];
+	const expected = ["c", "a", "b"];
+	for (const order of [sessions, [...sessions].reverse(), [sessions[1], sessions[2], sessions[0]]]) {
+		assert.deepEqual(flatIds(sessionView.groupSessions(order, { nowMs: now })), expected);
+	}
 });
 
 function session(id: string, updatedAtMs: number, title = id): SessionSummary {

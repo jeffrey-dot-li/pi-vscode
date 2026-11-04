@@ -10,6 +10,12 @@ export interface PiSession {
 	path: string;
 	title: string;
 	createdAtMs: number;
+	/**
+	 * When the user last sent a prompt (falls back to creation time). Unlike the file
+	 * mtime, this does not move while an agent streams output, so it gives the session
+	 * list a stable order instead of reshuffling every time a running session writes.
+	 */
+	lastPromptAtMs: number;
 	mtimeMs: number;
 }
 
@@ -44,7 +50,7 @@ export async function listWorkspaceSessions(cwd: string, options: SessionSearchO
 	const matches = await Promise.all(search.directories.map((directory) => readSessions(directory, search.cwd)));
 	const unique = new Map<string, PiSession>();
 	for (const session of matches.flat()) unique.set(session.path, session);
-	return [...unique.values()].sort((a, b) => b.mtimeMs - a.mtimeMs);
+	return [...unique.values()].sort(compareSessions);
 }
 
 /** A session persists as its JSONL transcript plus a sidecar directory of the same name. */
@@ -120,12 +126,14 @@ async function readSession(path: string, cwd: string): Promise<PiSession | undef
 
 	const parsed = await parseSession(path);
 	if (!parsed || !samePath(parsed.cwd, cwd)) return undefined;
+	const createdAtMs = sessionCreatedAt(parsed.header, stat.birthtimeMs || stat.mtimeMs);
 	const session: CachedSession = {
 		id: parsed.id,
 		path,
 		title: parsed.title,
 		cwd: parsed.cwd,
-		createdAtMs: sessionCreatedAt(parsed.header, stat.birthtimeMs || stat.mtimeMs),
+		createdAtMs,
+		lastPromptAtMs: parsed.lastPromptAtMs ?? createdAtMs,
 		mtimeMs: stat.mtimeMs,
 		size: stat.size,
 	};
@@ -133,8 +141,11 @@ async function readSession(path: string, cwd: string): Promise<PiSession | undef
 	return session;
 }
 
-async function parseSession(path: string): Promise<{ header: SessionHeader; id: string; cwd: string; title: string } | undefined> {
+async function parseSession(
+	path: string,
+): Promise<{ header: SessionHeader; id: string; cwd: string; title: string; lastPromptAtMs?: number } | undefined> {
 	let header: SessionHeader | undefined;
+	let lastPromptAtMs: number | undefined;
 	let sessionInfoName: string | undefined;
 	let firstUserText: string | undefined;
 	const lines = createInterface({ input: createReadStream(path, { encoding: "utf8" }), crlfDelay: Infinity });
@@ -147,13 +158,23 @@ async function parseSession(path: string): Promise<{ header: SessionHeader; id: 
 			continue;
 		}
 		if (entry.type === "session_info") sessionInfoName = sessionTitle(entry.name) ?? sessionInfoName;
-		if (!firstUserText && entry.type === "message" && isUserMessage(entry.message)) {
-			const text = extractUserMessageText(entry.message.content);
-			if (text.trim()) firstUserText = text;
+		if (entry.type === "message" && isUserMessage(entry.message)) {
+			const promptAt = typeof entry.timestamp === "string" ? Date.parse(entry.timestamp) : Number.NaN;
+			if (Number.isFinite(promptAt) && (lastPromptAtMs === undefined || promptAt > lastPromptAtMs)) lastPromptAtMs = promptAt;
+			if (!firstUserText) {
+				const text = extractUserMessageText(entry.message.content);
+				if (text.trim()) firstUserText = text;
+			}
 		}
 	}
 	if (!header || typeof header.id !== "string" || typeof header.cwd !== "string") return undefined;
-	return { header, id: header.id, cwd: header.cwd, title: sessionInfoName ?? (firstUserText ? deriveTitle(firstUserText) : NEW_SESSION_TITLE) };
+	return {
+		header,
+		id: header.id,
+		cwd: header.cwd,
+		title: sessionInfoName ?? (firstUserText ? deriveTitle(firstUserText) : NEW_SESSION_TITLE),
+		lastPromptAtMs,
+	};
 }
 
 function parseLine(line: string): Record<string, unknown> | undefined {
@@ -193,6 +214,11 @@ function deriveTitle(text: string): string {
 function sessionCreatedAt(header: SessionHeader, fallback: number): number {
 	const timestamp = typeof header.timestamp === "string" ? Date.parse(header.timestamp) : Number.NaN;
 	return Number.isFinite(timestamp) ? timestamp : fallback;
+}
+
+/** Newest prompt first; ties (and sessions never prompted) fall back to creation time, then id. */
+export function compareSessions(a: PiSession, b: PiSession): number {
+	return b.lastPromptAtMs - a.lastPromptAtMs || b.createdAtMs - a.createdAtMs || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0);
 }
 
 function samePath(a: string, b: string): boolean {
