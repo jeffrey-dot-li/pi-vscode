@@ -300,6 +300,20 @@ body {
 	display: flex;
 }
 
+.session-folder {
+	flex: none;
+	max-width: 40%;
+	padding: 0 5px;
+	border-radius: 3px;
+	background: var(--vscode-badge-background);
+	color: var(--vscode-badge-foreground);
+	font-size: 10px;
+	line-height: 16px;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+	overflow: hidden;
+}
+
 .session-age {
 	color: var(--vscode-descriptionForeground);
 	font-size: 11px;

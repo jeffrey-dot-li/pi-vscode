@@ -2,7 +2,7 @@ import { execFile } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { accessSync, chmodSync, constants, existsSync, promises as fs, watch, type FSWatcher } from "node:fs";
 import { homedir } from "node:os";
-import { dirname, join, resolve } from "node:path";
+import { basename, dirname, join, resolve } from "node:path";
 import * as pty from "node-pty";
 import * as vscode from "vscode";
 import {
@@ -22,6 +22,7 @@ import {
 	deleteSessionFiles,
 	listWorkspaceSessions,
 	NEW_SESSION_TITLE,
+	samePath,
 	sessionDirectoriesForWorkspace,
 	type PiSession,
 } from "./session-store";
@@ -43,6 +44,8 @@ import { normalizePiTerminalCopy } from "./terminal-copy";
 interface RunningSession {
 	tabId: string;
 	sessionId: string;
+	/** Folder Pi runs in; one of the workspace folders. */
+	cwd: string;
 	startedAtMs: number;
 	title: string;
 	path?: string;
@@ -65,6 +68,23 @@ interface StartSessionOptions {
 	noPresentation?: boolean;
 	/** Passed to `pi --model` for agent-created panels. */
 	model?: string;
+	/**
+	 * Folder to run Pi in. Defaults to the cwd recorded for the session (transcript
+	 * header or restored tab), so only brand-new sessions need to pass it.
+	 */
+	cwd?: string;
+}
+
+interface WorkspaceRoot {
+	name: string;
+	path: string;
+}
+
+/** Every folder of the (possibly multi-root) workspace, in workspace order. */
+function workspaceRoots(): WorkspaceRoot[] {
+	return (vscode.workspace.workspaceFolders ?? [])
+		.filter((folder) => folder.uri.scheme === "file" && Boolean(folder.uri.fsPath))
+		.map((folder) => ({ name: folder.name, path: folder.uri.fsPath }));
 }
 
 interface PanelWaiter {
@@ -78,6 +98,8 @@ class PiTerminalLink extends vscode.TerminalLink {
 		length: number,
 		readonly kind: "file" | "url",
 		readonly target: string,
+		/** Relative file links resolve against the folder of the session that printed them. */
+		readonly cwd: string,
 	) {
 		super(startIndex, length, target);
 	}
@@ -103,6 +125,7 @@ const PI_VIEW_ID = "piAgent.view";
 const PI_CONTAINER_COMMAND = "workbench.view.extension.piAgent";
 const PI_CLOSE_SESSION_OR_VIEW_COMMAND = "piAgent.closeSessionOrView";
 const PI_VIEW_STATE_KEY = "piAgent.viewState";
+const PI_LAST_FOLDER_KEY = "piAgent.lastNewSessionFolder";
 const PI_FORK_DRAFT_FILE_ENV = "PI_VSCODE_FORK_DRAFT_FILE";
 const PI_NATIVE_DRAFT_FILE_ENV = "PI_VSCODE_DRAFT_FILE";
 const SESSION_ACTION_DISABLED_MESSAGE = "Available until session is done";
@@ -137,19 +160,17 @@ export function deactivate(): void {
 	piViewProvider = undefined;
 }
 
-function currentWorkspaceFolder(): vscode.WorkspaceFolder | undefined {
+/** The workspace folder of the focused editor, if it belongs to one. */
+function activeEditorRoot(): string | undefined {
 	const activeEditor = vscode.window.activeTextEditor;
-	if (activeEditor) {
-		const activeFolder = vscode.workspace.getWorkspaceFolder(activeEditor.document.uri);
-		if (activeFolder?.uri.fsPath) return activeFolder;
-	}
-	return vscode.workspace.workspaceFolders?.find((folder) => Boolean(folder.uri.fsPath));
+	if (!activeEditor) return undefined;
+	const folder = vscode.workspace.getWorkspaceFolder(activeEditor.document.uri);
+	return folder?.uri.scheme === "file" && folder.uri.fsPath ? folder.uri.fsPath : undefined;
 }
 
 class PiViewProvider implements vscode.WebviewViewProvider, vscode.Disposable {
 	private view: vscode.WebviewView | undefined;
 	private manager: PiSessionManager | undefined;
-	private cwd: string | undefined;
 	private disposed = false;
 
 	constructor(
@@ -158,13 +179,11 @@ class PiViewProvider implements vscode.WebviewViewProvider, vscode.Disposable {
 	) {}
 
 	async open(): Promise<void> {
-		const folder = currentWorkspaceFolder();
-		if (!folder) {
+		if (!workspaceRoots().length) {
 			await vscode.window.showErrorMessage("Pi needs an open workspace folder.");
 			return;
 		}
 
-		this.cwd = folder.uri.fsPath;
 		await vscode.commands.executeCommand(PI_CONTAINER_COMMAND);
 		this.view?.show();
 		this.createManager();
@@ -184,7 +203,7 @@ class PiViewProvider implements vscode.WebviewViewProvider, vscode.Disposable {
 			await this.open();
 			return;
 		}
-		this.manager.startNewSession();
+		void this.manager.startNewSession();
 	}
 
 	resolveWebviewView(webviewView: vscode.WebviewView): void {
@@ -209,14 +228,12 @@ class PiViewProvider implements vscode.WebviewViewProvider, vscode.Disposable {
 
 	private createManager(): void {
 		if (this.disposed || this.manager) return;
-		const cwd = this.cwd ?? currentWorkspaceFolder()?.uri.fsPath;
-		if (!cwd) {
+		if (!workspaceRoots().length) {
 			if (this.view) this.view.webview.html = "<!doctype html><body>Open a workspace folder to use Pi.</body>";
 			return;
 		}
 
-		this.cwd = cwd;
-		this.manager = new PiSessionManager(this.extensionUri, cwd, this.memento);
+		this.manager = new PiSessionManager(this.extensionUri, this.memento);
 	}
 }
 
@@ -252,7 +269,6 @@ class PiSessionManager implements vscode.Disposable {
 
 	constructor(
 		private readonly extensionUri: vscode.Uri,
-		private readonly cwd: string,
 		private readonly memento: vscode.Memento,
 	) {
 		this.viewState = normalizeViewState(this.memento.get(PI_VIEW_STATE_KEY));
@@ -268,6 +284,7 @@ class PiSessionManager implements vscode.Disposable {
 			undefined,
 			this.disposables,
 		);
+		vscode.workspace.onDidChangeWorkspaceFolders(() => void this.refreshHistory(), undefined, this.disposables);
 		vscode.window.onDidChangeActiveTerminal(
 			(terminal) => {
 				const session = terminal ? this.sessionForTerminal(terminal) : undefined;
@@ -291,12 +308,14 @@ class PiSessionManager implements vscode.Disposable {
 					const session = this.sessionForTerminal(context.terminal);
 					if (!session) return [];
 					return session.replay.linksForLine(context.line).then((links) =>
-						links.map((link) => new PiTerminalLink(link.startIndex, link.length, link.kind, link.target)),
+						links.map(
+							(link) => new PiTerminalLink(link.startIndex, link.length, link.kind, link.target, session.cwd),
+						),
 					);
 				},
 				handleTerminalLink: (link) => {
 					const piLink = link as PiTerminalLink;
-					return this.openLink(piLink.kind, piLink.target);
+					return this.openLink(piLink.kind, piLink.target, piLink.cwd);
 				},
 			}),
 		);
@@ -371,7 +390,7 @@ class PiSessionManager implements vscode.Disposable {
 				this.postActiveSession(this.activeSession()?.tabId);
 				break;
 			case "new":
-				this.startNewSession();
+				await this.startNewSession();
 				break;
 			case "customize":
 				await vscode.commands.executeCommand("workbench.action.openSettings", "piAgent");
@@ -410,7 +429,7 @@ class PiSessionManager implements vscode.Disposable {
 		for (const disposable of this.viewDisposables.splice(0)) disposable.dispose();
 	}
 
-	private async openLink(kind: "file" | "url", target: string): Promise<void> {
+	private async openLink(kind: "file" | "url", target: string, cwd: string): Promise<void> {
 		try {
 			if (kind === "url") {
 				const url = httpUrl(target);
@@ -418,7 +437,7 @@ class PiSessionManager implements vscode.Disposable {
 				return;
 			}
 
-			const file = resolveFileLink(target, this.cwd);
+			const file = resolveFileLink(target, cwd);
 			const document = await vscode.workspace.openTextDocument(vscode.Uri.file(file.path));
 			let selection: vscode.Range | undefined;
 			if (file.line !== undefined) {
@@ -432,8 +451,59 @@ class PiSessionManager implements vscode.Disposable {
 		}
 	}
 
-	startNewSession(): void {
-		this.startSession(randomUUID());
+	/** A new session asks which workspace folder to run in when there is more than one. */
+	async startNewSession(): Promise<void> {
+		const cwd = await this.pickFolder();
+		if (!cwd || this.disposed) return;
+		this.startSession(randomUUID(), undefined, { cwd });
+	}
+
+	private async pickFolder(): Promise<string | undefined> {
+		const roots = workspaceRoots();
+		if (roots.length <= 1) return roots[0]?.path;
+		// Offer the focused editor's folder, then the last folder picked, first.
+		const preferred = [activeEditorRoot(), this.memento.get<string>(PI_LAST_FOLDER_KEY)].filter(
+			(path): path is string => Boolean(path),
+		);
+		const rank = (root: WorkspaceRoot) => {
+			const index = preferred.findIndex((path) => samePath(path, root.path));
+			return index < 0 ? preferred.length : index;
+		};
+		const ordered = roots
+			.map((root, index) => ({ root, index }))
+			.sort((a, b) => rank(a.root) - rank(b.root) || a.index - b.index)
+			.map(({ root }) => root);
+		const active = activeEditorRoot();
+		const picked = await vscode.window.showQuickPick(
+			ordered.map((root) => ({
+				label: root.name,
+				description: root.path,
+				detail: active && samePath(active, root.path) ? "Folder of the active editor" : undefined,
+				path: root.path,
+			})),
+			{ title: "New Pi Session", placeHolder: "Folder to run Pi in", matchOnDescription: true },
+		);
+		if (picked) await this.memento.update(PI_LAST_FOLDER_KEY, picked.path);
+		return picked?.path;
+	}
+
+	/** Folder for a session being (re)started: its transcript's cwd, else its restored tab's, else the first folder. */
+	private cwdForSession(id: string, sessionPath: string | undefined): string | undefined {
+		const saved =
+			this.history.get(id) ??
+			(sessionPath ? [...this.history.values()].find((session) => samePath(session.path, sessionPath)) : undefined);
+		return (
+			saved?.cwd ??
+			this.openSessionFor(id)?.cwd ??
+			this.viewState.openSessions.find((record) => record.id === id)?.cwd ??
+			workspaceRoots()[0]?.path
+		);
+	}
+
+	/** Display name of the workspace folder a session runs in. */
+	private folderName(cwd: string): string | undefined {
+		// Transcripts record the realpath; a symlinked workspace folder will not match it exactly.
+		return workspaceRoots().find((root) => samePath(root.path, cwd))?.name ?? basename(cwd);
 	}
 
 	private restoreSessions(): void {
@@ -442,7 +512,8 @@ class PiSessionManager implements vscode.Disposable {
 		// focused session before the loop.
 		const focused = this.viewState.focusedSessionId;
 		if (!restored.length) {
-			this.startNewSession();
+			// With several folders, opening the view must not pop up a folder picker.
+			if (workspaceRoots().length <= 1) void this.startNewSession();
 			return;
 		}
 		const visible = restored.find((record) => record.id === focused) ?? restored[0];
@@ -610,7 +681,11 @@ class PiSessionManager implements vscode.Disposable {
 			forked = await createForkedSession(source.path, entryId, source.title, source.open?.leafId);
 			if (forked.draft) draftFile = await createNativeDraftFile(forked.draft);
 			await this.refreshHistory();
-			const failure = this.startSession(forked.id, forked.path, { nativeDraftFile: draftFile, reportError: false });
+			const failure = this.startSession(forked.id, forked.path, {
+				nativeDraftFile: draftFile,
+				reportError: false,
+				cwd: source.cwd,
+			});
 			if (failure) throw new Error(failure);
 		} catch (error) {
 			if (draftFile) await removeNativeDraftFile(draftFile).catch(() => undefined);
@@ -626,7 +701,7 @@ class PiSessionManager implements vscode.Disposable {
 		let prepared = await prepareRewindSession(source.path, entryId, source.title, source.open?.leafId);
 		const snapshot = await resolveSessionSnapshot(source.path, entryId);
 		let revertCode = false;
-		if (snapshot && (await worktreeDiffersFromSnapshot(this.cwd, snapshot))) {
+		if (snapshot && (await worktreeDiffersFromSnapshot(source.cwd, snapshot))) {
 			const choice = await vscode.window.showWarningMessage(
 				"Submit from a previous message?",
 				{
@@ -655,7 +730,7 @@ class PiSessionManager implements vscode.Disposable {
 				await this.stopSessionForReplacement(source.open);
 				stopped = true;
 			}
-			if (revertCode && snapshot) await restoreWorktreeSnapshot(this.cwd, snapshot);
+			if (revertCode && snapshot) await restoreWorktreeSnapshot(source.cwd, snapshot);
 			await rewriteSessionFile(source.path, prepared.contents);
 			rewritten = true;
 			await this.refreshHistory();
@@ -679,13 +754,16 @@ class PiSessionManager implements vscode.Disposable {
 	private sessionActionSource(sessionId: string): {
 		path: string;
 		title: string;
+		cwd: string;
 		open: RunningSession | undefined;
 	} {
 		const open = this.openSessionFor(sessionId);
 		const saved = this.history.get(sessionId);
 		const path = saved?.path ?? open?.path;
 		if (!path) throw new Error("Send a message before using this action.");
-		return { path, title: saved?.title ?? open?.title ?? NEW_SESSION_TITLE, open };
+		const cwd = saved?.cwd ?? open?.cwd ?? this.cwdForSession(sessionId, path);
+		if (!cwd) throw new Error("Pi needs an open workspace folder.");
+		return { path, title: saved?.title ?? open?.title ?? NEW_SESSION_TITLE, cwd, open };
 	}
 
 	private assertSessionActionAvailable(open: RunningSession | undefined): void {
@@ -737,7 +815,7 @@ class PiSessionManager implements vscode.Disposable {
 		if (this.disposed) return;
 		const openSessions = [...this.sessions.values()]
 			.filter((session) => session.attached)
-			.map((session) => (session.path ? { id: session.sessionId, path: session.path } : { id: session.sessionId }));
+			.map((session) => ({ id: session.sessionId, ...(session.path ? { path: session.path } : {}), cwd: session.cwd }));
 		this.viewState = normalizeViewState({ ...this.viewState, openSessions });
 		void this.memento.update(PI_VIEW_STATE_KEY, this.viewState);
 	}
@@ -762,6 +840,7 @@ class PiSessionManager implements vscode.Disposable {
 		const failure = this.startSession(request.sessionId, forked.path, {
 			draftFile: request.draftFile,
 			reportError: false,
+			cwd: forked.cwd,
 		});
 		if (failure) throw new Error(failure);
 	}
@@ -769,7 +848,7 @@ class PiSessionManager implements vscode.Disposable {
 	private async handlePanelRequest(request: PiPanelRequest): Promise<unknown> {
 		switch (request.action) {
 			case "create":
-				return this.panelCreate(request.model);
+				return this.panelCreate(request.model, request.tabId);
 			case "prompt":
 				return this.panelPrompt(request.tabId, request.text);
 			case "wait":
@@ -782,13 +861,19 @@ class PiSessionManager implements vscode.Disposable {
 	}
 
 	/** Like `herdr agent start`: open a background tab and answer once its Pi accepts input. */
-	private async panelCreate(model: string | undefined): Promise<{ tabId: string; sessionId: string }> {
+	private async panelCreate(
+		model: string | undefined,
+		callerTabId: string | undefined,
+	): Promise<{ tabId: string; sessionId: string }> {
 		const id = randomUUID();
+		// A panel runs in its caller's folder; older panel packages do not send the caller.
+		const cwd = (callerTabId ? this.sessions.get(callerTabId)?.cwd : undefined) ?? workspaceRoots()[0]?.path;
 		const failure = this.startSession(id, undefined, {
 			noFocus: true,
 			noPresentation: true,
 			reportError: false,
 			model,
+			cwd,
 		});
 		if (failure) throw new Error(failure);
 		const deadline = Date.now() + PANEL_READY_TIMEOUT_MS;
@@ -913,6 +998,14 @@ class PiSessionManager implements vscode.Disposable {
 			if (options.reportError !== false) void vscode.window.showErrorMessage(failure);
 			return failure;
 		}
+		const cwd = options.cwd ?? this.cwdForSession(id, sessionPath);
+		if (!cwd) {
+			const failure = "Pi needs an open workspace folder.";
+			if (options.reportError !== false) void vscode.window.showErrorMessage(failure);
+			return failure;
+		}
+		// Recovery retries reuse these options; pin the folder so a retry cannot drift.
+		options = { ...options, cwd };
 
 		let spawnedProcess: pty.IPty | undefined;
 		let replay: TerminalReplay | undefined;
@@ -945,7 +1038,7 @@ class PiSessionManager implements vscode.Disposable {
 			);
 			replay = new TerminalReplay(cols, rows, scrollback);
 			const child = pty.spawn(spawn.file, spawn.args, {
-				cwd: this.cwd,
+				cwd,
 				name: "xterm-256color",
 				cols,
 				rows,
@@ -956,6 +1049,7 @@ class PiSessionManager implements vscode.Disposable {
 			const session: RunningSession = {
 				tabId,
 				sessionId: id,
+				cwd,
 				startedAtMs: Date.now(),
 				title,
 				path: sessionPath,
@@ -1270,7 +1364,7 @@ class PiSessionManager implements vscode.Disposable {
 	}
 
 	private async refreshHistory(): Promise<void> {
-		const sessions = await listWorkspaceSessions(this.cwd);
+		const sessions = await listWorkspaceSessions(workspaceRoots().map((root) => root.path));
 		if (this.disposed) return;
 		this.history.clear();
 		for (const session of sessions) this.history.set(session.id, session);
@@ -1331,7 +1425,7 @@ class PiSessionManager implements vscode.Disposable {
 		if (this.disposed || this.historyWatchSyncing) return;
 		this.historyWatchSyncing = true;
 		try {
-			const directories = new Set(await sessionDirectoriesForWorkspace(this.cwd));
+			const directories = new Set(await sessionDirectoriesForWorkspace(workspaceRoots().map((root) => root.path)));
 			if (this.disposed) return;
 			for (const [directory, watcher] of this.historyWatchers) {
 				if (directories.has(directory)) continue;
@@ -1360,11 +1454,15 @@ class PiSessionManager implements vscode.Disposable {
 
 	private postHistory(): void {
 		const archived = new Set(this.viewState.archivedSessionIds);
-		const sessions = [...this.history.values()].map(({ id, title, createdAtMs, lastPromptAtMs }) => {
+		// Label sessions with their folder only when the workspace has several.
+		const labelled = workspaceRoots().length > 1;
+		const folder = (cwd: string) => (labelled ? this.folderName(cwd) : undefined);
+		const sessions = [...this.history.values()].map(({ id, title, cwd, createdAtMs, lastPromptAtMs }) => {
 			const openSession = this.openSessionFor(id);
 			return {
 				id,
 				title,
+				folder: folder(cwd),
 				createdAtMs,
 				updatedAtMs: lastPromptAtMs,
 				archived: archived.has(id),
@@ -1378,6 +1476,7 @@ class PiSessionManager implements vscode.Disposable {
 			sessions.push({
 				id: session.sessionId,
 				title: session.title,
+				folder: folder(session.cwd),
 				createdAtMs: session.startedAtMs,
 				updatedAtMs: session.startedAtMs,
 				archived: archived.has(session.sessionId),

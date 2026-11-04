@@ -28,6 +28,13 @@ test("keeps only usable open sessions and caps how many are restored", () => {
 	assert.equal(state.openSessions.length, MAX_RESTORED_SESSIONS);
 });
 
+test("keeps the folder of restored sessions for multi-root workspaces", () => {
+	const state = normalizeViewState({
+		openSessions: [{ id: "a", cwd: "/home/me/tax" }, { id: "b", path: "/tmp/b.jsonl", cwd: "" }, { id: "c", cwd: 3 }],
+	});
+	assert.deepEqual(state.openSessions, [{ id: "a", cwd: "/home/me/tax" }, { id: "b", path: "/tmp/b.jsonl" }, { id: "c" }]);
+});
+
 test("never restores an archived session and keeps focus only on a restored session", () => {
 	const archivedFocus = normalizeViewState({
 		openSessions: [{ id: "a" }, { id: "archived" }],

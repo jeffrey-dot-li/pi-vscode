@@ -20,7 +20,8 @@ Install from the [VS Code Marketplace](https://marketplace.visualstudio.com/item
 
 ## Session list
 
-- One entry per session, newest first. The title is the latest `session_info.name` from the session's JSONL transcript; sessions without one show `New Session`.
+- One entry per session, ordered by when you last prompted it (most recent first; ties fall back to creation time). The title is the latest `session_info.name` from the session's JSONL transcript; sessions without one show `New Session`.
+- **Multi-root workspaces** (`.code-workspace`): the list shows the sessions of every workspace folder, each tagged with its folder name (search matches folder names too). **New session** asks which folder to run Pi in, offering the active editor's folder and then the last folder picked first. Resumed, restored, forked and rewound sessions run in the folder recorded in their transcript, and relative file links resolve against it. Sessions whose folder is not part of the workspace (for example a git worktree elsewhere on disk) are not listed.
 - Click an entry to focus its native terminal, recreate a detached terminal with its screen and scrollback intact, or resume it from disk (`pi --session <file>`) if it is not running.
 - Hover a session to see when it was last used and to **Archive** it. Archiving moves the entry to the `Archive` group and closes its tab; Pi keeps running. The same button restores it.
 - **Delete** asks for confirmation, then stops Pi, closes the tab, and erases the transcript and sidecar directory from `~/.pi/agent/sessions/--<cwd>--/`.

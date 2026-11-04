@@ -9,6 +9,8 @@ export interface PiSession {
 	id: string;
 	path: string;
 	title: string;
+	/** Working directory recorded in the transcript header (the folder Pi ran in). */
+	cwd: string;
 	createdAtMs: number;
 	/**
 	 * When the user last sent a prompt (falls back to creation time). Unlike the file
@@ -33,7 +35,6 @@ interface SessionHeader {
 }
 
 interface CachedSession extends PiSession {
-	cwd: string;
 	size: number;
 }
 
@@ -45,9 +46,16 @@ export function encodeWorkspaceDirectory(cwd: string): string {
 	return `--${normalized.replace(/^[/\\]+/, "").replace(/[/\\:]/g, "-")}--`;
 }
 
-export async function listWorkspaceSessions(cwd: string, options: SessionSearchOptions = {}): Promise<PiSession[]> {
-	const search = await sessionSearch(cwd, options);
-	const matches = await Promise.all(search.directories.map((directory) => readSessions(directory, search.cwd)));
+/**
+ * Sessions whose recorded cwd is one of `cwds` (each folder of a multi-root workspace),
+ * newest prompt first.
+ */
+export async function listWorkspaceSessions(
+	cwds: string | readonly string[],
+	options: SessionSearchOptions = {},
+): Promise<PiSession[]> {
+	const search = await sessionSearch(cwds, options);
+	const matches = await Promise.all(search.directories.map((directory) => readSessions(directory, search.cwds)));
 	const unique = new Map<string, PiSession>();
 	for (const session of matches.flat()) unique.set(session.path, session);
 	return [...unique.values()].sort(compareSessions);
@@ -62,24 +70,30 @@ export async function deleteSessionFiles(path: string): Promise<void> {
 }
 
 export async function sessionDirectoriesForWorkspace(
-	cwd: string,
+	cwds: string | readonly string[],
 	options: SessionSearchOptions = {},
 ): Promise<string[]> {
-	return (await sessionSearch(cwd, options)).directories;
+	return (await sessionSearch(cwds, options)).directories;
 }
 
-async function sessionSearch(cwd: string, options: SessionSearchOptions): Promise<{ cwd: string; directories: string[] }> {
-	const workspaceCwd = await fs.realpath(cwd).catch(() => resolve(cwd));
+async function sessionSearch(
+	cwds: string | readonly string[],
+	options: SessionSearchOptions,
+): Promise<{ cwds: string[]; directories: string[] }> {
+	const roots = await Promise.all(
+		(typeof cwds === "string" ? [cwds] : [...cwds]).map((cwd) => fs.realpath(cwd).catch(() => resolve(cwd))),
+	);
+	const workspaceCwds = [...new Set(roots)];
 	const env = options.env ?? process.env;
 	const agentDir = expandHome(options.agentDir ?? env.PI_CODING_AGENT_DIR ?? join(homedir(), ".pi", "agent"));
 	const configuredSessionDir = options.sessionDir ?? env.PI_CODING_AGENT_SESSION_DIR;
 	const directories = configuredSessionDir
 		? [expandHome(configuredSessionDir)]
-		: [
-				join(agentDir, "sessions", encodeWorkspaceDirectory(workspaceCwd)),
-				join(agentDir, "session", encodeWorkspaceDirectory(workspaceCwd)),
-			];
-	return { cwd: workspaceCwd, directories };
+		: workspaceCwds.flatMap((cwd) => [
+				join(agentDir, "sessions", encodeWorkspaceDirectory(cwd)),
+				join(agentDir, "session", encodeWorkspaceDirectory(cwd)),
+			]);
+	return { cwds: workspaceCwds, directories: [...new Set(directories)] };
 }
 
 function expandHome(value: string): string {
@@ -88,17 +102,17 @@ function expandHome(value: string): string {
 	return resolve(value);
 }
 
-async function readSessions(directory: string, cwd: string): Promise<PiSession[]> {
+async function readSessions(directory: string, cwds: readonly string[]): Promise<PiSession[]> {
 	try {
 		const entries = await fs.readdir(directory, { withFileTypes: true });
 		const paths = entries.filter((entry) => entry.isFile() && entry.name.endsWith(".jsonl")).map((entry) => join(directory, entry.name));
-		return readSessionsWithConcurrency(paths, cwd);
+		return readSessionsWithConcurrency(paths, cwds);
 	} catch {
 		return [];
 	}
 }
 
-async function readSessionsWithConcurrency(paths: string[], cwd: string): Promise<PiSession[]> {
+async function readSessionsWithConcurrency(paths: string[], cwds: readonly string[]): Promise<PiSession[]> {
 	const sessions: PiSession[] = [];
 	let next = 0;
 	const worker = async (): Promise<void> => {
@@ -106,7 +120,7 @@ async function readSessionsWithConcurrency(paths: string[], cwd: string): Promis
 			const path = paths[next++];
 			if (!path) continue;
 			try {
-				const session = await readSession(path, cwd);
+				const session = await readSession(path, cwds);
 				if (session) sessions.push(session);
 			} catch {
 				// A session may be deleted or still being written while we scan it.
@@ -117,15 +131,16 @@ async function readSessionsWithConcurrency(paths: string[], cwd: string): Promis
 	return sessions;
 }
 
-async function readSession(path: string, cwd: string): Promise<PiSession | undefined> {
+async function readSession(path: string, cwds: readonly string[]): Promise<PiSession | undefined> {
 	const stat = await fs.stat(path);
+	const inWorkspace = (cwd: string) => cwds.some((candidate) => samePath(cwd, candidate));
 	const cached = sessionCache.get(path);
 	if (cached && cached.mtimeMs === stat.mtimeMs && cached.size === stat.size) {
-		return samePath(cached.cwd, cwd) ? cached : undefined;
+		return inWorkspace(cached.cwd) ? cached : undefined;
 	}
 
 	const parsed = await parseSession(path);
-	if (!parsed || !samePath(parsed.cwd, cwd)) return undefined;
+	if (!parsed || !inWorkspace(parsed.cwd)) return undefined;
 	const createdAtMs = sessionCreatedAt(parsed.header, stat.birthtimeMs || stat.mtimeMs);
 	const session: CachedSession = {
 		id: parsed.id,
@@ -221,7 +236,7 @@ export function compareSessions(a: PiSession, b: PiSession): number {
 	return b.lastPromptAtMs - a.lastPromptAtMs || b.createdAtMs - a.createdAtMs || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0);
 }
 
-function samePath(a: string, b: string): boolean {
+export function samePath(a: string, b: string): boolean {
 	const left = resolve(a);
 	const right = resolve(b);
 	return process.platform === "win32" ? left.toLowerCase() === right.toLowerCase() : left === right;

@@ -132,7 +132,8 @@ export default function (pi: ExtensionAPI): void {
 		async execute(_toolCallId, params, signal) {
 			const result = await panelRequest<PanelCreateResult>(
 				"create",
-				params.model === undefined ? {} : { model: params.model },
+				// The caller's tab lets the host start the panel in the caller's workspace folder.
+				{ ...(params.model === undefined ? {} : { model: params.model }), ...(ownTabId ? { tabId: ownTabId } : {}) },
 				signal,
 				60_000,
 			);

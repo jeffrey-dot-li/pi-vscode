@@ -12,6 +12,33 @@ import {
 	NEW_SESSION_TITLE,
 } from "../session-store";
 
+test("lists the sessions of every folder in a multi-root workspace with their cwd", async (t) => {
+	const root = await mkdtemp(join(tmpdir(), "pi-vscode-"));
+	t.after(() => rm(root, { recursive: true, force: true }));
+
+	const agentDir = join(root, "agent");
+	const folders = [join(root, "arris"), join(root, "tax")];
+	const outside = join(root, "arris-4438");
+	for (const [index, cwd] of [...folders, outside].entries()) {
+		await mkdir(cwd, { recursive: true });
+		const real = await realpath(cwd);
+		const dir = join(agentDir, "sessions", encodeWorkspaceDirectory(real));
+		await mkdir(dir, { recursive: true });
+		await writeFile(join(dir, `s${index}.jsonl`), sessionHeader(`s${index}`, real, `2026-06-0${index + 1}T00:00:00.000Z`));
+	}
+
+	const sessions = await listWorkspaceSessions(folders, { agentDir, env: {} });
+	assert.deepEqual(
+		sessions.map((session) => [session.id, session.cwd]),
+		[
+			["s1", await realpath(folders[1])],
+			["s0", await realpath(folders[0])],
+		],
+	);
+	// A single folder still works, and a worktree outside the workspace is never listed.
+	assert.deepEqual((await listWorkspaceSessions(folders[0], { agentDir, env: {} })).map((session) => session.id), ["s0"]);
+});
+
 test("lists only this workspace's sessions, newest first", async (t) => {
 	const root = await mkdtemp(join(tmpdir(), "pi-vscode-"));
 	t.after(() => rm(root, { recursive: true, force: true }));

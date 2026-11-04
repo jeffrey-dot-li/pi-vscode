@@ -228,6 +228,7 @@
 					session.id,
 					normalizedState(session.state),
 					session.title,
+					String(session.folder || ""),
 					Boolean(session.archived),
 					Boolean(session.attached),
 					String(session.tabId),
@@ -311,14 +312,21 @@
 		const open = document.createElement("button");
 		open.type = "button";
 		open.className = "session-open";
-		open.title = `${statusLabels[state]} — ${session.title} (${age})`;
-		open.setAttribute("aria-label", `${statusLabels[state]}: ${session.title}, ${age}`);
+		const where = session.folder ? ` in ${session.folder}` : "";
+		open.title = `${statusLabels[state]} — ${session.title}${where} (${age})`;
+		open.setAttribute("aria-label", `${statusLabels[state]}: ${session.title}${where}, ${age}`);
 		open.setAttribute("aria-pressed", String(selected));
 		const status = icon(statusIcons[state], `session-status ${state}`);
 		const label = document.createElement("span");
 		label.className = "session-label";
 		label.textContent = session.title;
 		open.append(status, label);
+		if (session.folder) {
+			const folder = document.createElement("span");
+			folder.className = "session-folder";
+			folder.textContent = session.folder;
+			open.append(folder);
+		}
 		open.addEventListener("click", () => vscode.postMessage({ type: "resume", id: session.id }));
 
 		const actions = document.createElement("div");

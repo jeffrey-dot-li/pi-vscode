@@ -4,6 +4,7 @@ import test from "node:test";
 interface SessionSummary {
 	id: string;
 	title: string;
+	folder?: string;
 	createdAtMs: number;
 	updatedAtMs?: number;
 	archived?: boolean;
@@ -98,6 +99,17 @@ test("enables Fork and Rewind only after a session stops working", () => {
 	assert.equal(sessionView.sessionActionAvailable({ ...summary, state: "working" }), false);
 	assert.equal(sessionView.sessionActionAvailable({ ...summary, state: "idle" }), true);
 	assert.equal(sessionView.sessionActionAvailable({ ...summary, state: "inactive" }), true);
+});
+
+test("search matches a session's workspace folder as well as its title", () => {
+	const now = new Date(2026, 10, 3, 12).getTime();
+	const sessions: SessionSummary[] = [
+		{ ...session("fix-ci", now - HOUR), folder: "ARRIS" },
+		{ ...session("w2", now - 2 * HOUR), folder: "tax" },
+		session("untagged", now - 3 * HOUR),
+	];
+	assert.deepEqual(flatIds(sessionView.groupSessions(sessions, { nowMs: now, query: "tax" })), ["w2"]);
+	assert.deepEqual(flatIds(sessionView.groupSessions(sessions, { nowMs: now, query: "fix" })), ["fix-ci"]);
 });
 
 test("orders sessions with identical timestamps deterministically", () => {

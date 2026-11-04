@@ -57,7 +57,10 @@
 	function matchesQuery(session, query) {
 		const needle = String(query || "").trim().toLowerCase();
 		if (!needle) return true;
-		return String((session && session.title) || "").toLowerCase().includes(needle);
+		// Searching a folder name (e.g. "tax") finds that folder's sessions in multi-root workspaces.
+		return [session && session.title, session && session.folder].some((text) =>
+			String(text || "").toLowerCase().includes(needle),
+		);
 	}
 
 	function sessionActionAvailable(session) {
