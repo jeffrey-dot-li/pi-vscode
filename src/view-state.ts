@@ -1,6 +1,11 @@
-export const MAX_RESTORED_SESSIONS = 8;
+/** Cap on the opened list; nothing is launched at startup, so this only bounds storage. */
+export const MAX_RESTORED_SESSIONS = 200;
 export const MAX_ARCHIVED_SESSIONS = 500;
 
+/**
+ * A session in the opened list (like VS Code's Open Editors). Opened sessions persist
+ * across reloads but are not launched until clicked; every running session is opened.
+ */
 export interface OpenSessionRecord {
 	id: string;
 	path?: string;
@@ -9,6 +14,8 @@ export interface OpenSessionRecord {
 	 * (no transcript header to read it from) in multi-root workspaces.
 	 */
 	cwd?: string;
+	/** Pinned sessions are listed first. */
+	pinned?: true;
 }
 
 export interface PiViewState {
@@ -40,7 +47,12 @@ export function normalizeViewState(value: unknown): PiViewState {
 		seen.add(id);
 		const path = nonEmptyString(open.path);
 		const cwd = nonEmptyString(open.cwd);
-		openSessions.push({ id, ...(path ? { path } : {}), ...(cwd ? { cwd } : {}) });
+		openSessions.push({
+			id,
+			...(path ? { path } : {}),
+			...(cwd ? { cwd } : {}),
+			...(open.pinned === true ? { pinned: true as const } : {}),
+		});
 		if (openSessions.length >= MAX_RESTORED_SESSIONS) break;
 	}
 
@@ -62,6 +74,27 @@ export function setArchived(state: PiViewState, sessionId: string, archived: boo
 		archivedSessionIds: ids.slice(0, MAX_ARCHIVED_SESSIONS),
 		openSessions: archived ? state.openSessions.filter((session) => session.id !== id) : state.openSessions,
 		...(archived && state.focusedSessionId === id ? { focusedSessionId: undefined } : {}),
+	};
+}
+
+/** Pin or unpin an opened session; unknown ids are ignored. */
+export function setPinned(state: PiViewState, sessionId: string, pinned: boolean): PiViewState {
+	return {
+		...state,
+		openSessions: state.openSessions.map((record) => {
+			if (record.id !== sessionId) return record;
+			const { pinned: _old, ...rest } = record;
+			return pinned ? { ...rest, pinned: true as const } : rest;
+		}),
+	};
+}
+
+/** Remove a session from the opened list (the caller stops it if it is running). */
+export function closeOpened(state: PiViewState, sessionId: string): PiViewState {
+	return {
+		...state,
+		openSessions: state.openSessions.filter((record) => record.id !== sessionId),
+		...(state.focusedSessionId === sessionId ? { focusedSessionId: undefined } : {}),
 	};
 }
 

@@ -56,6 +56,10 @@
 		search: '<circle cx="6.9" cy="6.9" r="4.1"/><path d="M10 10 13.6 13.6"/>',
 		"chevron-down": '<path d="M4.2 6.4 8 10.1l3.8-3.7"/>',
 		"chevron-right": '<path d="M6.4 4.2 10.1 8l-3.7 3.8"/>',
+		close: '<path d="M4.4 4.4 11.6 11.6M11.6 4.4 4.4 11.6"/>',
+		pin: '<path d="M9.6 2.4 13.6 6.4 11.2 7.2 8.8 9.6 9.2 12.4 3.6 6.8 6.4 7.2 8.8 4.8z"/><path d="M5.8 10.2 2.4 13.6"/>',
+		pinned:
+			'<path d="M9.6 2.4 13.6 6.4 11.2 7.2 8.8 9.6 9.2 12.4 3.6 6.8 6.4 7.2 8.8 4.8z" fill="currentColor"/><path d="M5.8 10.2 2.4 13.6"/>',
 	};
 
 	function icon(name, className) {
@@ -221,6 +225,8 @@
 
 	function sessionSignature(groups, nowMs) {
 		const parts = [search.value.trim(), String(activeTabId)];
+		// Opened/pinned decide which view a session is in and which buttons it gets.
+		for (const session of historySessions) parts.push(session.id, Boolean(session.opened), Boolean(session.pinned));
 		for (const group of groups) {
 			parts.push(group.title, collapsedGroups.has(group.title), expandedGroups.has(group.title));
 			for (const session of group.sessions) {
@@ -242,7 +248,10 @@
 	function renderSessions(sessions) {
 		if (sessions) historySessions = sessions;
 		const nowMs = Date.now();
-		const groups = PiSessionView.groupSessions(historySessions, { nowMs, query: search.value });
+		const searching = Boolean(search.value.trim());
+		const groups = searching
+			? PiSessionView.groupSessions(historySessions, { nowMs, query: search.value })
+			: PiSessionView.groupOpenedSessions(historySessions);
 		const signature = sessionSignature(groups, nowMs);
 		if (signature === sessionRenderSignature) return;
 		sessionRenderSignature = signature;
@@ -250,7 +259,9 @@
 		if (!groups.length) {
 			const empty = document.createElement("p");
 			empty.className = "list-empty";
-			empty.textContent = search.value.trim() ? "No matching sessions." : "No saved sessions.";
+			empty.textContent = searching
+				? "No matching sessions."
+				: "No open sessions. Search to reopen one, or start a new session.";
 			sessionList.append(empty);
 			return;
 		}
@@ -280,10 +291,11 @@
 		section.append(heading);
 		if (collapsed) return section;
 
-		const expanded = expandedGroups.has(group.title);
+		// The opened list always shows every entry; history groups collapse behind More.
+		const expanded = group.opened || expandedGroups.has(group.title);
 		const visible = expanded ? group.sessions : group.sessions.slice(0, GROUP_PREVIEW_COUNT);
-		for (const session of visible) section.append(sessionRow(session));
-		if (group.sessions.length > GROUP_PREVIEW_COUNT) {
+		for (const session of visible) section.append(sessionRow(session, group.opened === true));
+		if (!group.opened && group.sessions.length > GROUP_PREVIEW_COUNT) {
 			const more = document.createElement("button");
 			more.type = "button";
 			more.className = "group-more";
@@ -301,8 +313,9 @@
 		return section;
 	}
 
-	function sessionRow(session) {
+	function sessionRow(session, inOpenedView) {
 		const archived = Boolean(session.archived);
+		const pinned = Boolean(session.pinned);
 		const state = normalizedState(session.state);
 		const selected = activeTabId !== undefined && session.tabId === activeTabId;
 		const age = PiSessionView.formatAge(PiSessionView.sessionTimestamp(session), Date.now());
@@ -335,17 +348,39 @@
 		ageLabel.className = "session-age";
 		ageLabel.textContent = age;
 		actions.append(ageLabel);
-		const archive = document.createElement("button");
-		archive.type = "button";
-		archive.className = "session-action";
-		archive.title = archived ? `Restore ${session.title}` : `Archive ${session.title}`;
-		archive.setAttribute("aria-label", archive.title);
-		archive.append(icon(archived ? "unarchive" : "archive"));
-		archive.addEventListener("click", (event) => {
-			event.stopPropagation();
-			vscode.postMessage({ type: "archive", id: session.id, archived: !archived });
-		});
-		actions.append(archive);
+		const action = (name, title, message) => {
+			const button = document.createElement("button");
+			button.type = "button";
+			button.className = "session-action";
+			button.title = title;
+			button.setAttribute("aria-label", title);
+			button.append(icon(name));
+			button.addEventListener("click", (event) => {
+				event.stopPropagation();
+				vscode.postMessage(message);
+			});
+			return button;
+		};
+		if (inOpenedView) {
+			actions.append(
+				action(pinned ? "pinned" : "pin", pinned ? `Unpin ${session.title}` : `Pin ${session.title}`, {
+					type: "pin",
+					id: session.id,
+					pinned: !pinned,
+				}),
+				action("close", `Close ${session.title} (stops Pi)`, { type: "close", id: session.id }),
+			);
+		} else {
+			actions.append(
+				action(archived ? "unarchive" : "archive", archived ? `Restore ${session.title}` : `Archive ${session.title}`, {
+					type: "archive",
+					id: session.id,
+					archived: !archived,
+				}),
+			);
+		}
+		// Pinned sessions keep their pin visible so the list reads at a glance.
+		if (pinned && inOpenedView) row.classList.add("pinned");
 		row.append(open, actions);
 
 		row.addEventListener("contextmenu", (event) => {
@@ -366,6 +401,18 @@
 					run: () => vscode.postMessage({ type: "shutdown", id: session.tabId }),
 				});
 			}
+			if (session.opened) {
+				items.push({
+					label: pinned ? "Unpin" : "Pin",
+					hint: pinned ? "Move it back to Open" : "Keep it at the top of the list",
+					run: () => vscode.postMessage({ type: "pin", id: session.id, pinned: !pinned }),
+				});
+				items.push({
+					label: "Close",
+					hint: "Remove it from the open list and stop Pi; it stays in search",
+					run: () => vscode.postMessage({ type: "close", id: session.id }),
+				});
+			}
 			items.push({
 				label: "Rename",
 				hint: "Change the name shown in this list",
@@ -374,7 +421,7 @@
 			items.push(...sessionHistoryActionItems(session));
 			items.push({
 				label: archived ? "Restore" : "Archive",
-				hint: archived ? "Move this session back to its date group" : "Close its terminal and file it under Archive",
+				hint: archived ? "Move this session back to its date group" : "Close it (stopping Pi) and file it under Archive",
 				run: () => vscode.postMessage({ type: "archive", id: session.id, archived: !archived }),
 			});
 			items.push({

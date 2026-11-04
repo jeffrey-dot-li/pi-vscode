@@ -63,6 +63,24 @@
 		);
 	}
 
+	const PINNED_GROUP = "Pinned";
+	const OPENED_GROUP = "Open";
+
+	/**
+	 * The default (empty search) view: only opened sessions, like VS Code's Open
+	 * Editors. Pinned ones first, each group by last prompt. Searching uses
+	 * groupSessions over all history instead.
+	 */
+	function groupOpenedSessions(sessions) {
+		const opened = (sessions || []).filter((session) => session && session.opened).slice().sort(compareSessions);
+		const pinned = opened.filter((session) => session.pinned);
+		const rest = opened.filter((session) => !session.pinned);
+		const groups = [];
+		if (pinned.length) groups.push({ title: PINNED_GROUP, sessions: pinned, opened: true });
+		if (rest.length) groups.push({ title: OPENED_GROUP, sessions: rest, opened: true });
+		return groups;
+	}
+
 	function sessionActionAvailable(session) {
 		const state = session && session.state;
 		return state !== "starting" && state !== "working";
@@ -89,5 +107,5 @@
 			.map((title) => ({ title, sessions: buckets.get(title) }));
 	}
 
-	return { ARCHIVE_GROUP, compareSessions, formatAge, groupSessions, matchesQuery, recencyGroup, sessionActionAvailable, sessionTimestamp };
+	return { ARCHIVE_GROUP, OPENED_GROUP, PINNED_GROUP, compareSessions, groupOpenedSessions, formatAge, groupSessions, matchesQuery, recencyGroup, sessionActionAvailable, sessionTimestamp };
 });

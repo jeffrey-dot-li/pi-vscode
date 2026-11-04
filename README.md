@@ -13,19 +13,22 @@ Install from the [VS Code Marketplace](https://marketplace.visualstudio.com/item
 - **Live status per session.** Each entry shows what Pi is doing: a spinning blue glyph while it works, green when it is waiting for your input, gray when it is stopped. No need to keep a terminal in view to know whether the agent is still going.
 - **Native terminal behavior.** Pi uses VS Code's own terminal surface, so terminal keybindings, IME input, find, selection, accessibility, themes, shell keyboard protocols, and user terminal settings follow VS Code directly.
 - **Click paths to open files.** ⌘-click (Ctrl on Windows/Linux) any path Pi prints and it opens in the editor at the right line and column. Paths like `src/file.ts:12:3` and paths wrapped across terminal rows work; keyboard-copying wrapped Pi output restores the original line.
-- **Session management.** Browse every session for the current workspace in the list, grouped by `Today` / `Yesterday` / `Last 7 Days` / `Last 30 Days` / `Older` / `Archive`. Resume, rename, archive, close, or delete sessions from the list. Right-click a session and pick **Rename** to change its name — the same name Pi's `/name` sets, so it also works while Pi is running. Open terminals are remembered per workspace and reopened next time.
+- **Session management.** Browse every session for the current workspace in the list, grouped by `Today` / `Yesterday` / `Last 7 Days` / `Last 30 Days` / `Older` / `Archive`. Resume, rename, archive, close, or delete sessions from the list. Right-click a session and pick **Rename** to change its name — the same name Pi's `/name` sets, so it also works while Pi is running. The opened list is remembered per workspace; sessions start when clicked.
 - **Fork and rewind sessions.** Right-click a session and pick **Fork** or **Rewind** to branch from, or go back to, any earlier user message. Fork opens the copy in a new tab; Rewind rewinds the session and restarts Pi with the message ready to re-send. Both are disabled while Pi is working. Rewind can also restore files to the state captured before the message — the checkpoint is a Git object in the transcript and never touches the real index; restoring files requires a Git repository.
 - **Audio cue.** A short tone plays when a session goes from working to waiting — so you can start a task, switch away, and get told when it is done or needs input.
 - **Agent panels (opt-in).** With the companion Pi package installed, a Pi session can spawn sibling Pi sessions in background tabs and drive them — prompt, wait for completion, list — so one orchestrator can fan reviews out to parallel agents and run fix/verify loops. See [Agent panels](#agent-panels).
 
 ## Session list
 
-- One entry per session, ordered by when you last prompted it (most recent first; ties fall back to creation time). The title is the latest `session_info.name` from the session's JSONL transcript; sessions without one show `New Session`.
+- **Open sessions, like Open Editors.** With the search box empty, the list shows only *opened* sessions: **Pinned** first, then **Open**. A session becomes opened when you start it, resume it from search, or Pi runs it; every running session is opened (agent-created panels excepted). Hover an entry to **pin** it or **close** it (×). Closing removes it from the list and stops Pi; it stays on disk and in search.
+- **Lazy restore.** The opened list persists per workspace across reloads and restarts, but nothing is launched when the window opens: each session starts (`pi --session <file>`) when you click it. Opened sessions that were closed before their first prompt (nothing on disk) are dropped.
+- **Search covers all history.** Typing in the search box lists every session for the workspace, grouped by date, whether opened or not; clicking one opens it.
+- Entries are ordered by when you last prompted them (most recent first; ties fall back to creation time), ordered by when you last prompted it (most recent first; ties fall back to creation time). The title is the latest `session_info.name` from the session's JSONL transcript; sessions without one show `New Session`.
 - **Multi-root workspaces** (`.code-workspace`): the list shows the sessions of every workspace folder, each tagged with its folder name (search matches folder names too). **New session** asks which folder to run Pi in, offering the active editor's folder and then the last folder picked first. Resumed, restored, forked and rewound sessions run in the folder recorded in their transcript, and relative file links resolve against it. Sessions whose folder is not part of the workspace (for example a git worktree elsewhere on disk) are not listed.
 - Click an entry to focus its native terminal, recreate a detached terminal with its screen and scrollback intact, or resume it from disk (`pi --session <file>`) if it is not running.
-- Hover a session to see when it was last used and to **Archive** it. Archiving moves the entry to the `Archive` group and closes its tab; Pi keeps running. The same button restores it.
+- In search, hover a session to see when it was last used and to **Archive** it. Archiving closes it (stopping Pi) and moves it to the `Archive` group. The same button restores it.
 - **Delete** asks for confirmation, then stops Pi, closes the tab, and erases the transcript and sidecar directory from `~/.pi/agent/sessions/--<cwd>--/`.
-- Long groups collapse behind **More**; each group name collapses on click.
+- In search, long date groups collapse behind **More**; each group name collapses on click.
 
 ## Terminal
 
@@ -55,7 +58,7 @@ Panels share the workspace filesystem, so agents exchange briefs and results thr
 2. Open a folder in VS Code.
 3. Click the Pi terminal icon in the editor's top-right toolbar (next to Run), or run **Pi: Open** from the Command Palette.
 
-Pi opens its session list in the Secondary Side Bar, restores the native terminals that were open for that folder, and offers **New session** to start one.
+Pi opens its session list in the Secondary Side Bar with the sessions you had open (none are launched until you click one), and offers **New session** to start one.
 
 Select terminal text and press **Ctrl+Shift+C** (Linux/Windows) or **Cmd+C** (macOS) to copy. If the shortcut is forwarded to Pi, check that `terminal.integrated.sendKeybindingsToShell` is `false`. If you have customized `terminal.integrated.commandsToSkipShell`, add `"piAgent.copyTerminalSelection"` to your existing list so VS Code handles the copy shortcut.
 

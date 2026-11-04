@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { MAX_RESTORED_SESSIONS, normalizeViewState, setArchived } from "../view-state";
+import { closeOpened, MAX_RESTORED_SESSIONS, normalizeViewState, setPinned, setArchived } from "../view-state";
 
 test("treats unusable persisted state as empty", () => {
 	assert.deepEqual(normalizeViewState(undefined), { openSessions: [], archivedSessionIds: [] });
@@ -69,4 +69,27 @@ test("ignores archive requests without a session id", () => {
 	const state = normalizeViewState({ openSessions: [{ id: "a" }] });
 	assert.equal(setArchived(state, "", true), state);
 	assert.equal(setArchived(state, "   ", true), state);
+});
+
+test("persists pins on opened sessions and drops anything that is not literally true", () => {
+	const state = normalizeViewState({
+		openSessions: [{ id: "a", pinned: true }, { id: "b", pinned: "yes" }, { id: "c" }],
+	});
+	assert.deepEqual(state.openSessions, [{ id: "a", pinned: true }, { id: "b" }, { id: "c" }]);
+});
+
+test("pins, unpins and closes opened sessions by id", () => {
+	let state = normalizeViewState({
+		openSessions: [{ id: "a", path: "/a.jsonl" }, { id: "b" }],
+		focusedSessionId: "b",
+	});
+	state = setPinned(state, "a", true);
+	assert.deepEqual(state.openSessions[0], { id: "a", path: "/a.jsonl", pinned: true });
+	state = setPinned(state, "a", false);
+	assert.deepEqual(state.openSessions[0], { id: "a", path: "/a.jsonl" });
+	assert.equal(setPinned(state, "missing", true).openSessions.length, 2, "unknown ids are ignored");
+
+	state = closeOpened(state, "b");
+	assert.deepEqual(state.openSessions, [{ id: "a", path: "/a.jsonl" }]);
+	assert.equal(state.focusedSessionId, undefined, "closing the focused session clears focus");
 });

@@ -296,8 +296,14 @@ body {
 }
 
 .session-row:hover .session-actions,
-.session-row:focus-within .session-actions {
+.session-row:focus-within .session-actions,
+.session-row.pinned .session-actions {
 	display: flex;
+}
+
+/* Pinned rows keep only the pin visible when not hovered. */
+.session-row.pinned:not(:hover):not(:focus-within) .session-actions > :not(.session-action:first-of-type) {
+	display: none;
 }
 
 .session-folder {

@@ -5,6 +5,8 @@ interface SessionSummary {
 	id: string;
 	title: string;
 	folder?: string;
+	opened?: boolean;
+	pinned?: boolean;
 	createdAtMs: number;
 	updatedAtMs?: number;
 	archived?: boolean;
@@ -18,6 +20,7 @@ interface SessionView {
 		options: { nowMs: number; query?: string },
 	): Array<{ title: string; sessions: SessionSummary[] }>;
 	sessionTimestamp(session: SessionSummary): number;
+	groupOpenedSessions(sessions: SessionSummary[]): Array<{ title: string; sessions: SessionSummary[]; opened: boolean }>;
 	sessionActionAvailable(session: SessionSummary & { state?: string }): boolean;
 }
 
@@ -126,6 +129,29 @@ test("orders sessions with identical timestamps deterministically", () => {
 	for (const order of [sessions, [...sessions].reverse(), [sessions[1], sessions[2], sessions[0]]]) {
 		assert.deepEqual(flatIds(sessionView.groupSessions(order, { nowMs: now })), expected);
 	}
+});
+
+test("the default view lists only opened sessions, pinned first, each by last prompt", () => {
+	const now = new Date(2026, 10, 3, 12).getTime();
+	const sessions: SessionSummary[] = [
+		{ ...session("old-pinned", now - 40 * DAY), opened: true, pinned: true },
+		{ ...session("recent", now - HOUR), opened: true },
+		{ ...session("history-only", now - MINUTE) },
+		{ ...session("new-pinned", now - 2 * HOUR), opened: true, pinned: true },
+		{ ...session("older", now - 3 * DAY), opened: true },
+	];
+	const groups = sessionView.groupOpenedSessions(sessions);
+	assert.deepEqual(
+		groups.map((group) => [group.title, group.sessions.map((entry) => entry.id)]),
+		[
+			["Pinned", ["new-pinned", "old-pinned"]],
+			["Open", ["recent", "older"]],
+		],
+	);
+	assert.ok(groups.every((group) => group.opened));
+	assert.deepEqual(sessionView.groupOpenedSessions([session("only-history", now)]), [], "nothing opened, nothing shown");
+	// Searching still covers all history, opened or not.
+	assert.ok(flatIds(sessionView.groupSessions(sessions, { nowMs: now, query: "history" })).includes("history-only"));
 });
 
 function session(id: string, updatedAtMs: number, title = id): SessionSummary {

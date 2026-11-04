@@ -39,7 +39,7 @@ import { piCommandArgs, piTuiModeArgs, win32Spawn } from "./pi-command";
 import { PiPseudoterminal } from "./native-terminal";
 import { httpUrl, resolveFileLink } from "./terminal-links";
 import { TerminalReplay } from "./terminal-replay";
-import { normalizeViewState, setArchived, type PiViewState } from "./view-state";
+import { closeOpened, normalizeViewState, setArchived, setPinned, type PiViewState } from "./view-state";
 import { normalizePiTerminalCopy } from "./terminal-copy";
 
 interface RunningSession {
@@ -53,6 +53,8 @@ interface RunningSession {
 	leafId?: string;
 	/** True only while this session is bound to the shared Terminal Editor. */
 	attached: boolean;
+	/** Agent-created panels run without joining the opened list. */
+	unlisted?: boolean;
 	process: pty.IPty;
 	replay: TerminalReplay;
 	cols: number;
@@ -69,6 +71,8 @@ interface StartSessionOptions {
 	noPresentation?: boolean;
 	/** Passed to `pi --model` for agent-created panels. */
 	model?: string;
+	/** Keep this session out of the opened list (agent-created panels). */
+	unlisted?: boolean;
 	/**
 	 * Folder to run Pi in. Defaults to the cwd recorded for the session (transcript
 	 * header or restored tab), so only brand-new sessions need to pass it.
@@ -118,6 +122,8 @@ type ClientMessage =
 	| { type: "shutdown"; id: string }
 	| { type: "delete"; id: string }
 	| { type: "archive"; id: string; archived: boolean }
+	| { type: "pin"; id: string; pinned: boolean }
+	| { type: "close"; id: string }
 	| { type: "rename"; id: string }
 	| { type: "load-user-messages"; action: SessionHistoryAction; id: string; requestId: string }
 	| { type: "session-history-action"; action: SessionHistoryAction; id: string; entryId?: string };
@@ -419,6 +425,14 @@ class PiSessionManager implements vscode.Disposable {
 			case "archive":
 				this.archiveSession(message.id, message.archived);
 				break;
+			case "pin":
+				this.viewState = setPinned(this.viewState, message.id, message.pinned);
+				this.persistViewState();
+				this.postHistory();
+				break;
+			case "close":
+				this.closeSession(message.id);
+				break;
 			case "rename":
 				await this.renameSession(message.id);
 				break;
@@ -518,27 +532,19 @@ class PiSessionManager implements vscode.Disposable {
 		return workspaceRoots().find((root) => samePath(root.path, cwd))?.name ?? basename(cwd);
 	}
 
+	/**
+	 * Opened sessions come back as a list, like VS Code's Open Editors, but nothing is
+	 * launched: each one starts when it is clicked, so a window with many opened
+	 * sessions opens instantly. Entries Pi never wrote to disk (sessions closed before
+	 * their first prompt) cannot be resumed and are dropped.
+	 */
 	private restoreSessions(): void {
-		const restored = this.viewState.openSessions;
-		// Each start persists the tab list again, which rewrites viewState, so read the
-		// focused session before the loop.
-		const focused = this.viewState.focusedSessionId;
-		if (!restored.length) {
-			// With several folders, opening the view must not pop up a folder picker.
-			if (workspaceRoots().length <= 1) void this.startNewSession();
-			return;
+		const kept = this.viewState.openSessions.filter((record) => record.path || this.history.has(record.id));
+		if (kept.length !== this.viewState.openSessions.length) {
+			this.viewState = { ...this.viewState, openSessions: kept };
+			void this.memento.update(PI_VIEW_STATE_KEY, this.viewState);
 		}
-		const visible = restored.find((record) => record.id === focused) ?? restored[0];
-		for (const record of restored) {
-			this.startSession(record.id, record.path, {
-				noFocus: true,
-				noPresentation: record.id !== visible.id,
-			});
-		}
-		if (this.openSessionFor(visible.id)) {
-			this.viewState = { ...this.viewState, focusedSessionId: visible.id };
-			this.persistViewState();
-		}
+		this.postHistory();
 	}
 
 	private resumeSession(id: string): void {
@@ -600,18 +606,23 @@ class PiSessionManager implements vscode.Disposable {
 		this.history.delete(sessionId);
 		this.renamedTitles.delete(sessionId);
 		this.sessionStates.delete(sessionId);
-		// The archive list is the only view state keyed by session id; the rest is rebuilt from live tabs.
-		this.viewState = setArchived(this.viewState, sessionId, false);
+		this.viewState = closeOpened(setArchived(this.viewState, sessionId, false), sessionId);
 		this.persistViewState();
 		this.postHistory();
 	}
 
-	// Archiving files the session under Archive and closes its native terminal; Pi keeps running.
+	/** Remove a session from the opened list; only opened sessions may run, so it stops too. */
+	private closeSession(sessionId: string): void {
+		const open = this.openSessionFor(sessionId);
+		if (open) this.shutdownSession(open.tabId);
+		this.viewState = closeOpened(this.viewState, sessionId);
+		this.persistViewState();
+		this.postHistory();
+	}
+
+	// Archiving files the session under Archive and closes it (stopping Pi).
 	private archiveSession(sessionId: string, archived: boolean): void {
-		if (archived) {
-			const open = this.openSessionFor(sessionId);
-			if (open?.attached) this.detachSession(open.tabId);
-		}
+		if (archived) this.closeSession(sessionId);
 		this.viewState = setArchived(this.viewState, sessionId, archived);
 		this.persistViewState();
 		this.postHistory();
@@ -823,12 +834,21 @@ class PiSessionManager implements vscode.Disposable {
 		this.postActiveSession(tabId);
 	}
 
+	/** Opened sessions persist by id; every running listed session is (or becomes) one. */
 	private persistViewState(): void {
 		if (this.disposed) return;
-		const openSessions = [...this.sessions.values()]
-			.filter((session) => session.attached)
-			.map((session) => ({ id: session.sessionId, ...(session.path ? { path: session.path } : {}), cwd: session.cwd }));
-		this.viewState = normalizeViewState({ ...this.viewState, openSessions });
+		const records = new Map(this.viewState.openSessions.map((record) => [record.id, record]));
+		for (const session of this.sessions.values()) {
+			if (session.unlisted) continue;
+			const previous = records.get(session.sessionId);
+			records.set(session.sessionId, {
+				...previous,
+				id: session.sessionId,
+				...(session.path ? { path: session.path } : {}),
+				cwd: session.cwd,
+			});
+		}
+		this.viewState = normalizeViewState({ ...this.viewState, openSessions: [...records.values()] });
 		void this.memento.update(PI_VIEW_STATE_KEY, this.viewState);
 	}
 
@@ -886,6 +906,7 @@ class PiSessionManager implements vscode.Disposable {
 			reportError: false,
 			model,
 			cwd,
+			unlisted: true,
 		});
 		if (failure) throw new Error(failure);
 		const deadline = Date.now() + PANEL_READY_TIMEOUT_MS;
@@ -1066,6 +1087,7 @@ class PiSessionManager implements vscode.Disposable {
 				title,
 				path: sessionPath,
 				attached: options.noPresentation !== true,
+				...(options.unlisted ? { unlisted: true } : {}),
 				process: child,
 				replay,
 				cols,
@@ -1393,6 +1415,17 @@ class PiSessionManager implements vscode.Disposable {
 		this.statusSequences.set(report.tabId, { sourceId: report.sourceId, seq: report.seq });
 		const previousState = this.sessionStates.get(session.sessionId);
 		if (session.sessionId !== report.sessionId) {
+			// Pi switched this tab to another session (/new, /resume, a fork): the tab's
+			// opened entry, including its pin, follows the tab.
+			const previousId = session.sessionId;
+			if (!session.unlisted && !this.viewState.openSessions.some((record) => record.id === report.sessionId)) {
+				this.viewState = {
+					...this.viewState,
+					openSessions: this.viewState.openSessions.map((record) =>
+						record.id === previousId ? { id: report.sessionId, ...(record.pinned ? { pinned: true as const } : {}) } : record,
+					),
+				};
+			}
 			this.sessionStates.set(session.sessionId, "inactive");
 			session.sessionId = report.sessionId;
 			session.startedAtMs = Date.now();
@@ -1466,6 +1499,11 @@ class PiSessionManager implements vscode.Disposable {
 
 	private postHistory(): void {
 		const archived = new Set(this.viewState.archivedSessionIds);
+		const openedRecords = new Map(this.viewState.openSessions.map((record) => [record.id, record]));
+		const openedFlags = (id: string) => {
+			const record = openedRecords.get(id);
+			return { opened: Boolean(record), pinned: record?.pinned === true };
+		};
 		// Label sessions with their folder only when the workspace has several.
 		const labelled = workspaceRoots().length > 1;
 		const folder = (cwd: string) => (labelled ? this.folderName(cwd) : undefined);
@@ -1475,6 +1513,7 @@ class PiSessionManager implements vscode.Disposable {
 				id,
 				title,
 				folder: folder(cwd),
+				...openedFlags(id),
 				createdAtMs,
 				updatedAtMs: lastPromptAtMs,
 				archived: archived.has(id),
@@ -1489,6 +1528,7 @@ class PiSessionManager implements vscode.Disposable {
 				id: session.sessionId,
 				title: session.title,
 				folder: folder(session.cwd),
+				...(session.unlisted ? { opened: false, pinned: false } : openedFlags(session.sessionId)),
 				createdAtMs: session.startedAtMs,
 				updatedAtMs: session.startedAtMs,
 				archived: archived.has(session.sessionId),
@@ -1546,8 +1586,16 @@ class PiSessionManager implements vscode.Disposable {
 			this.openPresentation(target, false);
 			return;
 		}
+		// Nothing running: resume the last focused opened session, else the most recent
+		// opened one, else the most recent session at all, else start a new one.
+		const opened = new Set(this.viewState.openSessions.map((record) => record.id));
+		const focused = this.viewState.focusedSessionId;
 		const archived = new Set(this.viewState.archivedSessionIds);
-		const recent = [...this.history.values()].filter((session) => !archived.has(session.id)).sort(compareSessions)[0];
+		const candidates = [...this.history.values()].filter((session) => !archived.has(session.id)).sort(compareSessions);
+		const recent =
+			(focused && opened.has(focused) ? this.history.get(focused) : undefined) ??
+			candidates.find((session) => opened.has(session.id)) ??
+			candidates[0];
 		if (recent) this.startSession(recent.id, recent.path);
 		else await this.startNewSession();
 	}
@@ -1679,6 +1727,8 @@ function isClientMessage(value: unknown): value is ClientMessage {
 		return true;
 	}
 	if (message.type === "archive") return typeof message.id === "string" && typeof message.archived === "boolean";
+	if (message.type === "pin") return nonEmptyBoundedString(message.id, 512) && typeof message.pinned === "boolean";
+	if (message.type === "close") return nonEmptyBoundedString(message.id, 512);
 	if (message.type === "load-user-messages") {
 		return (
 			isSessionHistoryAction(message.action) &&
@@ -1730,7 +1780,7 @@ function webviewHtml(webview: vscode.Webview, extensionUri: vscode.Uri): string 
 			</div>
 			<div id="search-field">
 				<span class="search-icon" aria-hidden="true"></span>
-				<input id="search" type="text" placeholder="Search sessions..." aria-label="Search sessions" autocomplete="off" spellcheck="false">
+				<input id="search" type="text" placeholder="Search all sessions..." aria-label="Search all sessions" autocomplete="off" spellcheck="false">
 			</div>
 			<nav id="sidebar-actions" aria-label="Session actions">
 				<button id="new-session" class="sidebar-action" type="button">
