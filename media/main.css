@@ -77,8 +77,9 @@ body {
 }
 
 #sidebar {
-	display: grid;
-	grid-template-rows: auto auto auto minmax(0, 1fr);
+	/* Flex, not a fixed grid: each page hides some rows and the list must still fill the rest. */
+	display: flex;
+	flex-direction: column;
 	height: 100%;
 	min-width: 0;
 	min-height: 0;
@@ -87,10 +88,34 @@ body {
 #sidebar-header {
 	display: flex;
 	align-items: center;
-	justify-content: flex-end;
 	gap: 2px;
 	height: 38px;
 	padding: 0 6px;
+}
+
+#page-title {
+	flex: 1;
+	min-width: 0;
+	margin: 0 0 0 6px;
+	overflow: hidden;
+	color: var(--vscode-sideBarTitle-foreground, var(--vscode-foreground));
+	font-size: 11px;
+	font-weight: 600;
+	letter-spacing: 0.04em;
+	text-overflow: ellipsis;
+	text-transform: uppercase;
+	white-space: nowrap;
+}
+
+/* Two pages: open sessions (default) and all sessions with search. */
+body:not(.page-all) #back,
+body:not(.page-all) #search-field,
+body.page-all #sidebar-actions {
+	display: none;
+}
+
+body.page-all #page-title {
+	margin-left: 2px;
 }
 
 #search-field {
@@ -170,6 +195,8 @@ body {
 }
 
 #session-list {
+	flex: 1;
+	min-height: 0;
 	padding: 0 6px 6px;
 	overflow-y: auto;
 }

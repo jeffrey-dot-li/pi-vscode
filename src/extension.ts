@@ -158,6 +158,7 @@ export function activate(context: vscode.ExtensionContext): void {
 		vscode.commands.registerCommand("piAgent.open", () => provider.open()),
 		vscode.commands.registerCommand("piAgent.newSession", () => provider.newSession()),
 		vscode.commands.registerCommand("piAgent.toggleTerminal", () => provider.toggleTerminal()),
+		vscode.commands.registerCommand("piAgent.searchSessions", () => provider.searchSessions()),
 		vscode.commands.registerCommand(PI_CLOSE_SESSION_OR_VIEW_COMMAND, () => provider.closeSessionOrView()),
 		vscode.commands.registerCommand("piAgent.copyTerminalSelection", () => provider.copyTerminalSelection()),
 	);
@@ -199,6 +200,12 @@ class PiViewProvider implements vscode.WebviewViewProvider, vscode.Disposable {
 
 	closeSessionOrView(): void {
 		this.manager?.closeActiveSessionOrView();
+	}
+
+	/** Reveal the session list on its All sessions page with the search box focused. */
+	async searchSessions(): Promise<void> {
+		await this.open();
+		this.manager?.showPage("all");
 	}
 
 	/** Show or hide the session terminal editor, like toggling the bottom terminal panel. */
@@ -404,6 +411,7 @@ class PiSessionManager implements vscode.Disposable {
 			case "ready":
 				this.viewReady = true;
 				this.postHistory();
+				this.flushPendingPage();
 				this.postCloseBehavior();
 				this.postActiveSession(this.activeSession()?.tabId);
 				break;
@@ -1561,6 +1569,20 @@ class PiSessionManager implements vscode.Disposable {
 		void this.view.webview.postMessage(message);
 	}
 
+	/** Switch the webview between its Open sessions and All sessions pages. */
+	showPage(page: "open" | "all"): void {
+		this.pendingPage = page;
+		this.flushPendingPage();
+	}
+
+	private pendingPage: "open" | "all" | undefined;
+
+	private flushPendingPage(): void {
+		if (!this.pendingPage || !this.viewReady || !this.view) return;
+		this.post({ type: "show-page", page: this.pendingPage });
+		this.pendingPage = undefined;
+	}
+
 	closeActiveSessionOrView(): void {
 		void vscode.commands.executeCommand("workbench.action.closeAuxiliaryBar");
 	}
@@ -1775,6 +1797,8 @@ function webviewHtml(webview: vscode.Webview, extensionUri: vscode.Uri): string 
 	<div id="app">
 		<main id="sidebar" aria-label="Pi sessions">
 			<div id="sidebar-header">
+				<button id="back" class="icon-button" type="button" title="Back to open sessions (Esc)" aria-label="Back to open sessions"></button>
+				<h1 id="page-title">Open sessions</h1>
 				<button id="customize" class="icon-button" type="button" title="Customize Pi settings" aria-label="Customize Pi settings"></button>
 				<button id="refresh" class="icon-button" type="button" title="Refresh sessions" aria-label="Refresh sessions"></button>
 			</div>
@@ -1785,6 +1809,9 @@ function webviewHtml(webview: vscode.Webview, extensionUri: vscode.Uri): string 
 			<nav id="sidebar-actions" aria-label="Session actions">
 				<button id="new-session" class="sidebar-action" type="button">
 					<span class="action-label">New session</span>
+				</button>
+				<button id="all-sessions" class="sidebar-action" type="button" title="All sessions for this workspace, with search">
+					<span class="action-label">Search all sessions</span>
 				</button>
 			</nav>
 			<div id="session-list"></div>

@@ -51,6 +51,11 @@
         "icon": "$(layout-sidebar-right)"
       },
       {
+        "command": "piAgent.searchSessions",
+        "title": "Pi: Search All Sessions",
+        "icon": "$(search)"
+      },
+      {
         "command": "piAgent.closeSessionOrView",
         "title": "Pi: Close Active Session or View"
       }
@@ -74,7 +79,8 @@
       "terminal.integrated.commandsToSkipShell": [
         "piAgent.copyTerminalSelection",
         "piAgent.toggleTerminal",
-        "piAgent.newSession"
+        "piAgent.newSession",
+        "piAgent.searchSessions"
       ]
     },
     "configuration": {

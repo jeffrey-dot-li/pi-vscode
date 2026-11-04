@@ -4,6 +4,9 @@
 	const search = document.getElementById("search");
 	const refresh = document.getElementById("refresh");
 	const newSession = document.getElementById("new-session");
+	const allSessions = document.getElementById("all-sessions");
+	const back = document.getElementById("back");
+	const pageTitle = document.getElementById("page-title");
 	const customize = document.getElementById("customize");
 	const menu = document.getElementById("menu");
 	const messageDialog = document.getElementById("message-dialog");
@@ -25,6 +28,8 @@
 	let messageDialogState;
 	let messageRequestSequence = 0;
 	let sessionRenderSignature = "";
+	/** "open": the opened (pinned + open) sessions; "all": every session, with search. */
+	let page = vscode.getState()?.page === "all" ? "all" : "open";
 
 	const statusLabels = {
 		inactive: "Not open",
@@ -57,6 +62,7 @@
 		"chevron-down": '<path d="M4.2 6.4 8 10.1l3.8-3.7"/>',
 		"chevron-right": '<path d="M6.4 4.2 10.1 8l-3.7 3.8"/>',
 		close: '<path d="M4.4 4.4 11.6 11.6M11.6 4.4 4.4 11.6"/>',
+		"arrow-left": '<path d="M12.6 8H3.4M7.4 4 3.4 8l4 4"/>',
 		pin: '<path d="M9.6 2.4 13.6 6.4 11.2 7.2 8.8 9.6 9.2 12.4 3.6 6.8 6.4 7.2 8.8 4.8z"/><path d="M5.8 10.2 2.4 13.6"/>',
 		pinned:
 			'<path d="M9.6 2.4 13.6 6.4 11.2 7.2 8.8 9.6 9.2 12.4 3.6 6.8 6.4 7.2 8.8 4.8z" fill="currentColor"/><path d="M5.8 10.2 2.4 13.6"/>',
@@ -224,7 +230,7 @@
 	}
 
 	function sessionSignature(groups, nowMs) {
-		const parts = [search.value.trim(), String(activeTabId)];
+		const parts = [page, search.value.trim(), String(activeTabId)];
 		// Opened/pinned decide which view a session is in and which buttons it gets.
 		for (const session of historySessions) parts.push(session.id, Boolean(session.opened), Boolean(session.pinned));
 		for (const group of groups) {
@@ -248,7 +254,7 @@
 	function renderSessions(sessions) {
 		if (sessions) historySessions = sessions;
 		const nowMs = Date.now();
-		const searching = Boolean(search.value.trim());
+		const searching = page === "all";
 		const groups = searching
 			? PiSessionView.groupSessions(historySessions, { nowMs, query: search.value })
 			: PiSessionView.groupOpenedSessions(historySessions);
@@ -260,8 +266,10 @@
 			const empty = document.createElement("p");
 			empty.className = "list-empty";
 			empty.textContent = searching
-				? "No matching sessions."
-				: "No open sessions. Search to reopen one, or start a new session.";
+				? search.value.trim()
+					? "No matching sessions."
+					: "No saved sessions."
+				: "No open sessions. Start a new one, or reopen one from Search all sessions.";
 			sessionList.append(empty);
 			return;
 		}
@@ -340,7 +348,11 @@
 			folder.textContent = session.folder;
 			open.append(folder);
 		}
-		open.addEventListener("click", () => vscode.postMessage({ type: "resume", id: session.id }));
+		open.addEventListener("click", () => {
+			vscode.postMessage({ type: "resume", id: session.id });
+			// Picking from all sessions opens it; go back to the open list, where it now is.
+			if (!inOpenedView) showPage("open");
+		});
 
 		const actions = document.createElement("div");
 		actions.className = "session-actions";
@@ -482,11 +494,45 @@
 			case "attention":
 				playAttentionSound();
 				break;
+			case "show-page":
+				showPage(message.page);
+				break;
 			case "close-behavior":
 				closeBehaviorStop = message.stop === true;
 				break;
 		}
 	});
+
+	function showPage(next, { focusSearch = true } = {}) {
+		page = next === "all" ? "all" : "open";
+		vscode.setState({ ...(vscode.getState() || {}), page });
+		document.body.classList.toggle("page-all", page === "all");
+		pageTitle.textContent = page === "all" ? "All sessions" : "Open sessions";
+		if (page === "all") {
+			if (focusSearch) search.focus();
+		} else {
+			search.value = "";
+		}
+		hideMenu();
+		renderSessions();
+	}
+
+	back.append(icon("arrow-left"));
+	allSessions.prepend(icon("search"));
+	allSessions.addEventListener("click", () => showPage("all"));
+	back.addEventListener("click", () => showPage("open"));
+	document.addEventListener("keydown", (event) => {
+		if (event.key !== "Escape" || page !== "all" || !menu.hidden || !messageDialog.hidden) return;
+		// First Esc clears the query, the next one goes back.
+		if (search.value) {
+			search.value = "";
+			renderSessions();
+		} else {
+			showPage("open");
+		}
+		event.preventDefault();
+	});
+	showPage(page, { focusSearch: false });
 
 	refresh.append(icon("refresh"));
 	customize.append(icon("sliders"));

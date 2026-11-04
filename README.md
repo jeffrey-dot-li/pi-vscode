@@ -20,15 +20,15 @@ Install from the [VS Code Marketplace](https://marketplace.visualstudio.com/item
 
 ## Session list
 
-- **Open sessions, like Open Editors.** With the search box empty, the list shows only *opened* sessions: **Pinned** first, then **Open**. A session becomes opened when you start it, resume it from search, or Pi runs it; every running session is opened (agent-created panels excepted). Hover an entry to **pin** it or **close** it (×). Closing removes it from the list and stops Pi; it stays on disk and in search.
+- **Open sessions, like Open Editors.** The default page lists only *opened* sessions: **Pinned** first, then **Open**. A session becomes opened when you start it, resume it from search, or Pi runs it; every running session is opened (agent-created panels excepted). Hover an entry to **pin** it or **close** it (×). Closing removes it from the list and stops Pi; it stays on disk and in search.
 - **Lazy restore.** The opened list persists per workspace across reloads and restarts, but nothing is launched when the window opens: each session starts (`pi --session <file>`) when you click it. Opened sessions that were closed before their first prompt (nothing on disk) are dropped.
-- **Search covers all history.** Typing in the search box lists every session for the workspace, grouped by date, whether opened or not; clicking one opens it.
+- **All sessions is its own page.** **Search all sessions** (or **Pi: Search All Sessions**) switches to a page that lists every session for the workspace, opened or not, grouped by date and ordered by last prompt, with a search box. Clicking one opens it and returns to the open list. The back arrow returns too; in the search box, Esc clears the query and a second Esc goes back.
 - Entries are ordered by when you last prompted them (most recent first; ties fall back to creation time), ordered by when you last prompted it (most recent first; ties fall back to creation time). The title is the latest `session_info.name` from the session's JSONL transcript; sessions without one show `New Session`.
 - **Multi-root workspaces** (`.code-workspace`): the list shows the sessions of every workspace folder, each tagged with its folder name (search matches folder names too). **New session** asks which folder to run Pi in, offering the active editor's folder and then the last folder picked first. Resumed, restored, forked and rewound sessions run in the folder recorded in their transcript, and relative file links resolve against it. Sessions whose folder is not part of the workspace (for example a git worktree elsewhere on disk) are not listed.
 - Click an entry to focus its native terminal, recreate a detached terminal with its screen and scrollback intact, or resume it from disk (`pi --session <file>`) if it is not running.
-- In search, hover a session to see when it was last used and to **Archive** it. Archiving closes it (stopping Pi) and moves it to the `Archive` group. The same button restores it.
+- On the All sessions page, hover a session to see when it was last used and to **Archive** it. Archiving closes it (stopping Pi) and moves it to the `Archive` group. The same button restores it.
 - **Delete** asks for confirmation, then stops Pi, closes the tab, and erases the transcript and sidecar directory from `~/.pi/agent/sessions/--<cwd>--/`.
-- In search, long date groups collapse behind **More**; each group name collapses on click.
+- On the All sessions page, long date groups collapse behind **More**; each group name collapses on click.
 
 ## Terminal
 
